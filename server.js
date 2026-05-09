@@ -4,6 +4,9 @@ require('dotenv').config();
    SECURITY NOTE
    * fail2ban or a similar SSH brute-force protection is recommended on the
      host running this server to block repeated failed login attempts.
+   * Sensitive admin routes (/healthz, /youtube-dashboard, /api/youtube/*)
+     require a Bearer token via the Authorization header or ?token= query param.
+     Set ADMIN_TOKEN in your .env file.
    ========================================================================== */
 
 /* ==========================================================================
@@ -15,6 +18,8 @@ const Database = require('better-sqlite3');
 const pLimit = require('p-limit');
 const fetch = (...args) =>
   import('node-fetch').then(({ default: fetch }) => fetch(...args));
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 // Regular Puppeteer — used for platforms that require JS rendering
 const puppeteer = require('puppeteer');
@@ -113,7 +118,7 @@ async function safeWait(page, ms) {
 /* ==========================================================================
    DATABASE
    ========================================================================== */
-const db = new Database('./data/mydb.sqlite');
+const db = new Database(path.join(__dirname, 'data', 'mydb.sqlite'));
 db.exec(`
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS streamers (
@@ -318,10 +323,7 @@ const TWITCH_AUTH_BASE  = process.env.TWITCH_AUTH_BASE  || 'https://id.twitch.tv
 const TWITCH_API_BASE   = process.env.TWITCH_API_BASE   || 'https://api.twitch.tv/helix';
 const TWITCH_WEB_BASE   = process.env.TWITCH_WEB_BASE   || 'https://twitch.tv';
 const VAUGHN_API_BASE   = process.env.VAUGHN_API_BASE   || 'https://api.vaughnsoft.net/v1/stream/vl';
-const ODYSEE_SDK_PROXY  = process.env.ODYSEE_SDK_PROXY  || 'https://api.na-backend.odysee.com';
-const ODYSEE_LIVE_API   = process.env.ODYSEE_LIVE_API   || 'https://api.odysee.live';
-const ODYSEE_WEB_BASE   = process.env.ODYSEE_WEB_BASE   || 'https://odysee.com';
-const ODYSEE_COOKIE     = process.env.ODYSEE_COOKIE     || '';
+
 const VAUGHN_WEB_BASE   = process.env.VAUGHN_WEB_BASE   || 'https://vaughn.live';
 const YOUTUBE_API_BASE  = process.env.YOUTUBE_API_BASE  || 'https://www.googleapis.com/youtube/v3';
 const LIVEPEER_CDN_BASE = process.env.LIVEPEER_CDN_BASE || 'https://livepeercdn.studio/hls';
@@ -2102,140 +2104,6 @@ async function fetchYouTubeAPI(username) {
 }
 
 
-/* ==========================================================================
-   ODYSEE
-   Flow:
-     1. resolve lbry://@username  →  claim_id, display_name, photo (cached)
-     2. POST api.odysee.live/livestream/is_live  →  live status + active claim URL
-     3. resolve ActiveClaim.CanonicalURL  →  stream title
-     4. get ActiveClaim.CanonicalURL  →  signed streaming_url (fixes 403 on CDN)
-   ========================================================================== */
-const odyseeClaimCache = new Map();
-
-async function fetchOdysee(username) {
-  try {
-    const sdkHeaders = {
-      'Content-Type': 'application/json',
-      'User-Agent': process.env.USER_AGENT || 'Mozilla/5.0',
-      ...(ODYSEE_COOKIE ? { 'Cookie': ODYSEE_COOKIE } : {}),
-    };
-
-    // Step 1: Resolve channel (cached)
-    let cached = odyseeClaimCache.get(username.toLowerCase());
-    if (!cached) {
-      const r = await fetch(`${ODYSEE_SDK_PROXY}/api/v1/proxy?m=resolve`, {
-        method: 'POST', headers: sdkHeaders,
-        body: JSON.stringify({ jsonrpc:'2.0', method:'resolve',
-          params:{ urls:[`lbry://@${username}`] }, id:1 }),
-      });
-      if (!r.ok) { console.error(`Odysee resolve HTTP ${r.status} for @${username}`); return null; }
-      const j = await r.json();
-      const claim = j?.result?.[`lbry://@${username}`];
-      if (!claim || claim.error) {
-        console.warn(`Odysee @${username} not found`); return null;
-      }
-      cached = {
-        claim_id:     claim.claim_id,
-        display_name: claim.value?.title || username,
-        photo:        claim.value?.thumbnail?.url || null,
-      };
-      odyseeClaimCache.set(username.toLowerCase(), cached);
-    }
-    const { claim_id: channelClaimId, display_name: displayName, photo } = cached;
-
-    // Step 2: Live status
-    const liveRes = await fetch(`${ODYSEE_LIVE_API}/livestream/is_live`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': process.env.USER_AGENT || 'Mozilla/5.0',
-        ...(ODYSEE_COOKIE ? { 'Cookie': ODYSEE_COOKIE } : {}),
-      },
-      body: new URLSearchParams({ channel_claim_id: channelClaimId }),
-    });
-    if (!liveRes.ok) {
-      if (liveRes.status !== 404) console.warn(`Odysee is_live HTTP ${liveRes.status} for @${username}`);
-      return { id:makeId('odysee',username), platform:'odysee', username,
-        display_name:displayName, status:'offline', viewers_raw:0, viewers:'0',
-        title:null, photo, url:`${ODYSEE_WEB_BASE}/@${username}`,
-        m3u8:null, vod_id:null, last_broadcast_time:null };
-    }
-    const liveData = (await liveRes.json())?.data;
-    const isLive   = liveData?.Live === true;
-    const viewers  = isLive ? (Number(liveData?.ViewerCount) || 0) : 0;
-    const activeCanonical = liveData?.ActiveClaim?.CanonicalURL || null;
-    const activeClaimId   = liveData?.ActiveClaim?.ClaimID     || null;
-    // VideoURL from is_live (cloud.odysee.live/content/...) is an internal ingest URL —
-    // it 403s when fetched directly without Odysee session auth.  Pass it to SDK `get`
-    // as base_streaming_url so the SDK derives a properly signed, publicly accessible URL.
-    const videoUrl = liveData?.VideoURL || null;
-    if (isLive) console.log(`Odysee @${username}: is_live data — VideoURL=${videoUrl} activeClaimId=${activeClaimId} activeCanonical=${activeCanonical}`);
-
-    // Steps 3+4: title + streaming URL
-    // SDK `get` always fails for live streams ("stream doesn't have source data") because
-    // live claims are has_no_source=true.  VideoURL from is_live IS the HLS source.
-    let streamTitle = null, streamingUrl = null;
-    if (isLive && activeCanonical) {
-      // Fetch title only
-      const titleJson = await fetch(`${ODYSEE_SDK_PROXY}/api/v1/proxy?m=resolve`, {
-        method:'POST', headers:sdkHeaders,
-        body:JSON.stringify({ jsonrpc:'2.0', method:'resolve',
-          params:{ urls:[activeCanonical] }, id:2 }),
-      }).then(r => r.ok ? r.json() : null).catch(() => null);
-
-      if (titleJson)
-        streamTitle = titleJson?.result?.[activeCanonical]?.value?.title || null;
-      if (streamTitle) console.log(`Odysee @${username}: title="${streamTitle}"`);
-
-      // URL priority:
-      //   1. VideoURL from is_live  (the live HLS source — primary)
-      //   2. Constructed cloud URL  (last-resort fallback)
-      if (videoUrl) {
-        streamingUrl = videoUrl;
-        console.log(`Odysee @${username}: using VideoURL: ${streamingUrl}`);
-      } else if (activeClaimId) {
-        streamingUrl = `https://cloud.odysee.live/live/${activeClaimId}/master.m3u8`;
-        console.warn(`Odysee @${username}: no VideoURL — using constructed fallback: ${streamingUrl}`);
-      }
-    }
-
-    // Convert lbry:// → odysee.com URL
-    let watchUrl = `${ODYSEE_WEB_BASE}/@${username}`;
-    if (isLive && activeCanonical) {
-      watchUrl = `${ODYSEE_WEB_BASE}/${activeCanonical.replace(/^lbry:\/\//,'').replace(/#/g,':')}`;
-    }
-    console.log(`Odysee @${username}: ${isLive?'ONLINE':'OFFLINE'} viewers=${viewers}`);
-    return {
-      id:makeId('odysee',username), platform:'odysee', username,
-      display_name:displayName, status:isLive?'online':'offline',
-      viewers_raw:viewers, viewers:formatViewers(viewers),
-      title:streamTitle, photo,
-      url:isLive ? watchUrl : `${ODYSEE_WEB_BASE}/@${username}`,
-      m3u8:streamingUrl, vod_id:activeClaimId, last_broadcast_time:null,
-    };
-  } catch(err) {
-    console.error(`Odysee error for @${username}:`, err.message); return null;
-  }
-}
-
-/* ==========================================================================
-   PARTI
-
-   Flow per user:
-     1. GET /parti_v2/profile/user_profile/{id}
-          → user_name, avatar_link
-     2. GET /parti_v2/profile/get_livestream_channel_info/{id}
-          → is_streaming_live_now  (true = online, false = offline)
-          → viewers_count, event_title, playback_url,
-            original_playback_url, dvr_url
-
-   Configured via:
-     PARTI_USER_IDS=462485,123456,...   (numeric Parti user IDs)
-     PARTI_AUTH_TOKEN=<jwt>             (Bearer token from browser DevTools)
-
-   last_broadcast_time is handled automatically by upsertStreamer SQL:
-   when status transitions online→offline it stamps strftime('now').
-   ========================================================================== */
 
 const partiHeaders = () => ({
   'Accept':             'application/json',
@@ -2623,7 +2491,6 @@ async function runScraper() {
       ...parseList(process.env.TWITCH_USERNAMES).map(u => makeId('twitch', u.toLowerCase())),
       ...parseList(process.env.VAUGHN_USERNAMES).map(u => makeId('vaughn', u.toLowerCase())),
       ...parseList(process.env.YOUTUBE_USERNAMES).map(u => makeId('youtube', u.toLowerCase())),
-      ...parseList(process.env.ODYSEE_USERNAMES).map(u => makeId('odysee', u.toLowerCase())),
       ...parseList(process.env.PARTI_USER_IDS).map(id => makeId('parti', String(id))),
       // Rumble rows are written by the external rumble_monitor.py process.
       // Include them here so deleteRemovedStreamers never wipes them.
@@ -2643,9 +2510,6 @@ async function runScraper() {
       ),
       ...parseList(process.env.YOUTUBE_USERNAMES).map(u =>
         limit(() => fetchYouTubeLive(u))
-      ),
-      ...parseList(process.env.ODYSEE_USERNAMES).map(u =>
-        limit(() => fetchOdysee(u))
       ),
       // Parti: one bulk call instead of N per-user calls
       limit(() => fetchPartiAll()),
@@ -2711,8 +2575,57 @@ async function runScraper() {
    SERVER WITH KICK OAUTH
    ========================================================================== */
 const app = express();
+
+/* ==========================================================================
+   SECURITY MIDDLEWARE
+   ========================================================================== */
+
+// Helmet: sets secure HTTP headers (X-Frame-Options, HSTS, CSP, etc.)
+app.use(helmet({
+  contentSecurityPolicy: false, // disabled to avoid breaking inline scripts/styles in existing views
+  crossOriginEmbedderPolicy: false,
+}));
+
+// General rate limiter — 200 requests per 5 minutes per IP
+const generalLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+});
+app.use(generalLimiter);
+
+// Strict limiter for auth/OAuth routes — 10 requests per 15 minutes per IP
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many auth attempts, please try again later.' },
+});
+
+// Admin auth middleware — checks Authorization: Bearer <token> or ?token=<token>
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
+function requireAdminToken(req, res, next) {
+  if (!ADMIN_TOKEN) {
+    // No token configured — block access entirely rather than allow open access
+    return res.status(503).json({ error: 'Admin access not configured.' });
+  }
+  const authHeader = req.headers['authorization'] || '';
+  const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const queryToken = req.query.token;
+  const provided = bearer || queryToken;
+  if (!provided || provided !== ADMIN_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized.' });
+  }
+  // Remove token from query so it doesn't leak into logs downstream
+  delete req.query.token;
+  next();
+}
+
 app.use(express.static(path.join(__dirname, 'public')));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'views', 'index.html'));
@@ -2730,12 +2643,12 @@ app.get('/donos.html', (req, res) => {
   res.sendFile(path.join(__dirname, 'views', 'donos.html'));
 });
 
-app.get('/login/kick', (req, res) => {
+app.get('/login/kick', authLimiter, (req, res) => {
   const authUrl = getKickAuthUrl();
   res.redirect(authUrl);
 });
 
-app.get('/auth/kick/callback', async (req, res) => {
+app.get('/auth/kick/callback', authLimiter, async (req, res) => {
   const { code, error, state } = req.query;
   
   if (error) {
@@ -2750,7 +2663,8 @@ app.get('/auth/kick/callback', async (req, res) => {
     await exchangeKickCode(code, state);
     res.send('Kick authorization successful! Tokens saved. You can close this window.');
   } catch (err) {
-    res.status(500).send(`Token exchange failed: ${err.message}`);
+    console.error('Kick callback error:', err.message);
+    res.status(500).send('Token exchange failed. Check server logs for details.');
   }
 });
 
@@ -2760,104 +2674,6 @@ app.get('/auth/kick', (req, res) => {
     token_expiry: kickTokenExpiry ? new Date(kickTokenExpiry).toISOString() : null,
     auth_url: `/login/kick`   // client should redirect to this route, which generates a fresh PKCE pair
   });
-});
-
-const HLS_PROXY_ALLOWED = [
-  'odycdn.com',         // covers player.odycdn.com, cdn.odycdn.com, and any other subdomains
-  'cloud.odysee.live',
-  'api.odysee.live',
-];
-
-app.get('/api/proxy/hls', async (req, res) => {
-  const rawUrl = req.query.url;
-  if (!rawUrl) return res.status(400).send('Missing url param');
-
-  let parsed;
-  try { parsed = new URL(rawUrl); }
-  catch { return res.status(400).send('Invalid url'); }
-
-  const allowed = HLS_PROXY_ALLOWED.some(
-    d => parsed.hostname === d || parsed.hostname.endsWith('.' + d)
-  );
-  if (!allowed) {
-    return res.status(403).send(`Domain not proxied: ${parsed.hostname}`);
-  }
-
-  // Send the correct Origin/Referer for each CDN so their CORS checks pass
-  const originMap = {};
-  const siteHeaders = Object.entries(originMap).find(([d]) =>
-    parsed.hostname === d || parsed.hostname.endsWith('.' + d)
-  )?.[1] ?? { origin: 'https://odysee.com', referer: 'https://odysee.com/' };
-
-  // Send the Odysee session cookie for cloud.odysee.live and odycdn.com segments
-  const isOdysee = ['cloud.odysee.live','odycdn.com','api.odysee.live'].some(
-    d => parsed.hostname === d || parsed.hostname.endsWith('.' + d)
-  );
-
-  try {
-    const upstream = await fetch(rawUrl, {
-      headers: {
-        'User-Agent': process.env.USER_AGENT || 'Mozilla/5.0',
-        'Origin': siteHeaders.origin,
-        'Referer': siteHeaders.referer,
-        ...(isOdysee && ODYSEE_COOKIE ? { Cookie: ODYSEE_COOKIE } : {}),
-      },
-    });
-
-    if (!upstream.ok) {
-      return res.status(upstream.status).send(`Upstream ${upstream.status}`);
-    }
-
-    const ct = upstream.headers.get('content-type') || '';
-    res.set('Access-Control-Allow-Origin', '*');
-    res.set('Access-Control-Allow-Headers', 'Range');
-    res.set('Cache-Control', 'no-cache');
-
-    // Forward content-range / accept-ranges for byte-range requests
-    if (upstream.headers.get('content-range'))
-      res.set('Content-Range', upstream.headers.get('content-range'));
-    if (upstream.headers.get('accept-ranges'))
-      res.set('Accept-Ranges', upstream.headers.get('accept-ranges'));
-
-    const isPlaylist =
-      ct.includes('mpegurl') || ct.includes('x-mpegurl') ||
-      rawUrl.includes('.m3u8');
-
-    if (isPlaylist) {
-      res.set('Content-Type', 'application/vnd.apple.mpegurl');
-      const text  = await upstream.text();
-      const base  = new URL(rawUrl);
-
-      const rewritten = text.split('\n').map(line => {
-        const t = line.trim();
-        if (t === '' || t.startsWith('#')) {
-          // Rewrite URI= attributes inside tag lines (e.g. EXT-X-KEY)
-          return line.replace(/URI="([^"]+)"/g, (_, uri) => {
-            try {
-              const abs = new URL(uri, base).href;
-              return `URI="/api/proxy/hls?url=${encodeURIComponent(abs)}"`;
-            } catch { return _; }
-          });
-        }
-        // Segment / sub-playlist URI line
-        try {
-          const abs = new URL(t, base).href;
-          return `/api/proxy/hls?url=${encodeURIComponent(abs)}`;
-        } catch { return line; }
-      }).join('\n');
-
-      return res.send(rewritten);
-    }
-
-    // Binary segment — stream through
-    res.set('Content-Type', ct || 'video/MP2T');
-    const buf = await upstream.arrayBuffer();
-    return res.send(Buffer.from(buf));
-
-  } catch (err) {
-    console.error('HLS proxy error:', err.message);
-    return res.status(500).send('Proxy error');
-  }
 });
 
 app.get('/api/streamers', (req, res) => {
@@ -2883,10 +2699,19 @@ app.get('/api/stats', (req, res) => {
     last_scrape_at: LAST_SCRAPE_AT
   });
 });
-app.get('/youtube-dashboard', (req, res) => {
+setInterval(async () => {
+    try {
+        // Triggering the Python scraper every 70 seconds
+        await fetch('http://localhost:5000/scrape-rumble');
+        console.log(`[${new Date().toISOString()}] Rumble scrape triggered`);
+    } catch (e) {
+        console.error('Failed to trigger Rumble scrape. Is the Python app running on port 5000?', e.message);
+    }
+}, 70000); // 70 seconds
+app.get('/youtube-dashboard', requireAdminToken, (req, res) => {
      res.sendFile(path.join(__dirname, 'youtube-quota-dashboard.html'));
    });
-app.get('/api/youtube/quota', (req, res) => {
+app.get('/api/youtube/quota', requireAdminToken, (req, res) => {
   const dailyQuotaRemaining = youtubeQuotaDailyLimit - youtubeQuotaUsed;
   const dailyBudgetRemaining = youtubeDailyBudget - youtubeQuotaUsed;
   const monthlyBudgetRemaining = youtubeMonthlyBudget - youtubeMonthlyQuotaUsed;
@@ -2948,9 +2773,9 @@ app.get('/api/youtube/quota', (req, res) => {
 });
 
 // YouTube API Audit Endpoint - For YouTube compliance audits
-app.get('/api/youtube/audit', (req, res) => {
+app.get('/api/youtube/audit', requireAdminToken, (req, res) => {
   const { days, format } = req.query;
-  const daysToShow = parseInt(days) || 90;
+  const daysToShow = Math.min(Math.max(parseInt(days) || 90, 1), 365); // clamp 1–365
   
   // Get history for requested number of days
   const history = youtubeQuotaHistory.slice(-daysToShow);
@@ -3027,7 +2852,7 @@ app.get('/api/youtube/audit', (req, res) => {
       description: 'Multi-platform livestream monitoring service',
       monitored_channels: parseList(process.env.YOUTUBE_USERNAMES).length,
       check_interval_seconds: CHECK_INTERVAL / 1000,
-      platforms_monitored: ['YouTube', 'Kick', 'Twitch', 'Rumble', 'Vaughn', 'Odysee', 'Parti']
+      platforms_monitored: ['YouTube', 'Kick', 'Twitch', 'Rumble', 'Vaughn', 'Parti']
     }
   };
   
@@ -3041,7 +2866,7 @@ app.get('/api/youtube/audit', (req, res) => {
 app.get('/youtube-quota-dashboard.css', (req, res) => {
   res.sendFile(path.join(__dirname, 'youtube-quota-dashboard.css'));
 });
-app.get('/healthz', (req, res) => {
+app.get('/healthz', requireAdminToken, (req, res) => {
   const dailyQuotaPercentUsed = ((youtubeQuotaUsed / youtubeQuotaDailyLimit) * 100).toFixed(2);
   const monthlyBudgetPercentUsed = ((youtubeMonthlyQuotaUsed / youtubeMonthlyBudget) * 100).toFixed(2);
   

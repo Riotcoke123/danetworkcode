@@ -1,0 +1,42 @@
+{
+  "name": "streamer-list",
+  "version": "1.0.1",
+  "description": "Multi-platform live streamer scraper",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "pm2-start": "pm2 start server.js --name streamer-list --env production",
+    "pm2-restart": "pm2 restart streamer-list",
+    "pm2-stop": "pm2 stop streamer-list",
+    "pm2-logs": "pm2 logs streamer-list --lines 100"
+  },
+  "keywords": [
+    "youtube",
+    "twitch",
+    "kick",
+    "streaming",
+    "scraper",
+    "api",
+    "puppeteer"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^9.6.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "node-fetch": "^3.3.2",
+    "p-limit": "^3.1.0",
+    "puppeteer": "^24.15.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

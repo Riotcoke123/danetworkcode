@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YouTube API Quota Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="youtube-quota-dashboard.css">
+</head>
+<body>
+<div class="container">
+
+  <!-- Header -->
+  <div class="card header">
+    <h1>📊 YouTube API Quota Dashboard</h1>
+    <p class="subtitle">Compliance &amp; Usage Analytics</p>
+    <button class="refresh-btn" id="refreshBtn" onclick="loadAll()">🔄 Refresh</button>
+    <p class="last-updated" id="lastUpdated">Loading…</p>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats-grid" id="statsGrid"></div>
+
+  <!-- Daily chart — no white card wrapper -->
+  <div class="panel">
+    <p class="section-title">📈 Daily Quota Usage — Last 30 Days</p>
+    <div class="chart-wrap">
+      <canvas id="dailyChart"></canvas>
+    </div>
+  </div>
+
+  <!-- Monthly table — no white card wrapper -->
+  <div class="panel">
+    <p class="section-title">📅 Monthly Breakdown</p>
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Month</th>
+            <th>Quota Used</th>
+            <th>API Calls</th>
+            <th>Avg Daily</th>
+            <th>% of Limit</th>
+          </tr>
+        </thead>
+        <tbody id="monthlyBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+<script>
+'use strict';
+
+let chart = null;
+
+window.addEventListener('load', () => {
+  loadAll();
+  setInterval(loadAll, 60_000);
+});
+
+async function loadAll() {
+  setLoading(true);
+  try {
+    const [qRes, aRes] = await Promise.all([
+      fetch('/api/youtube/quota'),
+      fetch('/api/youtube/audit?format=detailed&days=90'),
+    ]);
+    if (!qRes.ok) throw new Error('Quota API ' + qRes.status);
+    if (!aRes.ok) throw new Error('Audit API ' + aRes.status);
+
+    const quota = await qRes.json();
+    const audit = await aRes.json();
+
+    renderStats(quota);
+    renderChart(audit.daily_history || []);
+    renderTable(audit.monthly_breakdown || {});
+
+    document.getElementById('lastUpdated').textContent =
+      'Updated ' + new Date().toLocaleTimeString();
+  } catch (err) {
+    document.getElementById('lastUpdated').textContent = '⚠️ ' + err.message;
+    console.error(err);
+  } finally {
+    setLoading(false);
+  }
+}
+
+function setLoading(on) {
+  const btn = document.getElementById('refreshBtn');
+  btn.textContent = on ? '⏳ Loading…' : '🔄 Refresh';
+  btn.disabled = on;
+}
+
+/* ── Stat cards ─────────────────────────── */
+function renderStats(d) {
+  const dailyPct   = parseFloat(d.daily_quota_percent_used)    || 0;
+  const monthlyPct = parseFloat(d.monthly_budget_percent_used) || 0;
+
+  const cards = [
+    {
+      label: 'Daily Quota Used',
+      value: fmt(d.daily_quota_used),
+      sub:   dailyPct + '% of ' + fmt(d.daily_quota_limit) + ' limit',
+      pct:   dailyPct,
+    },
+    {
+      label: 'Monthly Budget',
+      value: monthlyPct + '%',
+      sub:   fmt(d.monthly_budget_remaining) + ' units remaining',
+      pct:   monthlyPct,
+    },
+    {
+      label: 'API Calls Today',
+      value: fmt(d.api_call_count),
+      sub:   d.fallback_used ? '⚠️ Fallback active' : '✅ Primary API',
+      pct:   null,
+    },
+    {
+      label: 'Next Reset',
+      value: (d.hours_until_daily_reset ?? '?') + 'h',
+      sub:   (d.days_until_monthly_reset ?? '?') + ' days to month end',
+      pct:   null,
+    },
+  ];
+
+  document.getElementById('statsGrid').innerHTML = cards.map(c => {
+    const cardCls = c.pct > 90 ? 'critical' : c.pct > 75 ? 'warning' : '';
+    const fillCls = c.pct > 85 ? 'danger'   : c.pct > 75 ? 'warn'    : '';
+    const bar = c.pct != null
+      ? `<div class="progress-bar"><div class="progress-fill ${fillCls}" style="width:${Math.min(c.pct, 100)}%"></div></div>`
+      : '';
+    return `
+      <div class="stat-card ${cardCls}">
+        <h3>${c.label}</h3>
+        <div class="stat-value">${c.value}</div>
+        <p class="stat-sub">${c.sub}</p>
+        ${bar}
+      </div>`;
+  }).join('');
+}
+
+/* ── Bar chart (red) ────────────────────── */
+function renderChart(history) {
+  const rows   = history.slice(-30);
+  const labels = rows.map(r => r.date);
+  const values = rows.map(r => r.quota_used);
+
+  if (chart) chart.destroy();
+
+  chart = new Chart(document.getElementById('dailyChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label:           'Quota Used',
+        data:            values,
+        backgroundColor: 'rgba(220, 53, 69, 0.82)',
+        hoverBackgroundColor: '#c82333',
+        borderRadius:    4,
+        borderSkipped:   false,
+      }],
+    },
+    options: {
+      responsive:          true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ' ' + ctx.parsed.y.toLocaleString() + ' units',
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid:  { display: false },
+          ticks: { maxTicksLimit: 10, color: '#aaa', font: { size: 11 } },
+        },
+        y: {
+          beginAtZero: true,
+          grid:  { color: '#f0f1f4' },
+          ticks: {
+            color: '#aaa',
+            font:  { size: 11 },
+            callback: v =>
+              v >= 1_000_000 ? (v / 1_000_000).toFixed(1) + 'M' :
+              v >= 1_000     ? (v / 1_000).toFixed(0) + 'K' : v,
+          },
+        },
+      },
+    },
+  });
+}
+
+/* ── Monthly table ──────────────────────── */
+function renderTable(breakdown) {
+  const tbody   = document.getElementById('monthlyBody');
+  const entries = Object.entries(breakdown).sort((a, b) => b[0].localeCompare(a[0]));
+
+  if (!entries.length) {
+    tbody.innerHTML = '<tr class="empty"><td colspan="5">No history yet — accumulates as the server runs.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = entries.map(([month, d]) => {
+    const label = new Date(month + '-02').toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+    const pct   = parseFloat(d.quota_percent_of_monthly_limit) || 0;
+    const cls   = pct > 90 ? 'pct-critical' : pct > 75 ? 'pct-warning' : 'pct-ok';
+    return `
+      <tr>
+        <td><strong>${label}</strong></td>
+        <td>${fmt(d.quota_used)}</td>
+        <td>${fmt(d.api_calls)}</td>
+        <td>${fmt(d.avg_daily_usage)}</td>
+        <td><span class="pct ${cls}">${pct}%</span></td>
+      </tr>`;
+  }).join('');
+}
+
+function fmt(n) { return (n || 0).toLocaleString(); }
+</script>
+</body>
+</html>

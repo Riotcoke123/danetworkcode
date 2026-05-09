@@ -1,0 +1,211 @@
+/* ─── Reset ─────────────────────────────── */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* ─── Page ──────────────────────────────── */
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  min-height: 100vh;
+  padding: 24px 16px;
+  color: #333;
+}
+
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+/* ─── Card shell (header + stat cards only) ── */
+.card {
+  background: #fff;
+  border-radius: 16px;
+  padding: 28px 30px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+}
+
+/* ─── Bare panels (no white bg — chart & table) ── */
+.panel {
+  border-radius: 16px;
+  padding: 0;
+}
+
+/* ─── Header ────────────────────────────── */
+.header { text-align: center; }
+
+.header h1 {
+  font-size: 1.85em;
+  font-weight: 700;
+}
+
+.header .subtitle {
+  color: #888;
+  font-size: 0.93em;
+  margin: 5px 0 18px;
+}
+
+.refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #667eea;
+  color: #fff;
+  border: none;
+  border-radius: 50px;
+  padding: 11px 28px;
+  font-size: 0.92em;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+}
+.refresh-btn:hover    { background: #5a6fd6; }
+.refresh-btn:active   { transform: scale(0.97); }
+.refresh-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.last-updated {
+  color: #bbb;
+  font-size: 0.8em;
+  margin-top: 10px;
+}
+
+/* ─── Stats Grid ────────────────────────── */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(255px, 1fr));
+  gap: 18px;
+}
+
+.stat-card {
+  background: #fff;
+  border-radius: 16px;
+  padding: 22px 24px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.09);
+  border-left: 5px solid #28a745;
+}
+.stat-card.warning  { border-left-color: #f0a500; }
+.stat-card.critical { border-left-color: #dc3545; }
+
+.stat-card h3 {
+  font-size: 0.78em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: #999;
+  margin-bottom: 8px;
+}
+
+.stat-value {
+  font-size: 2.3em;
+  font-weight: 700;
+  line-height: 1;
+  color: #1a1a1a;
+  margin-bottom: 6px;
+}
+
+.stat-sub {
+  font-size: 0.84em;
+  color: #999;
+  margin-bottom: 12px;
+}
+
+/* ─── Progress Bar ──────────────────────── */
+.progress-bar {
+  height: 7px;
+  background: #eef0f4;
+  border-radius: 99px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 99px;
+  background: #28a745;
+  transition: width 0.55s ease;
+}
+.progress-fill.warn   { background: #f0a500; }
+.progress-fill.danger { background: #dc3545; }
+
+/* ─── Section Title (floats above transparent panels) ── */
+.section-title {
+  font-size: 1.02em;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 14px;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+
+/* ─── Chart ─────────────────────────────── */
+.chart-wrap {
+  position: relative;
+  height: 310px;
+  background: transparent;
+  padding: 0;
+}
+
+/* ─── Table ─────────────────────────────── */
+.table-scroll {
+  overflow-x: auto;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.91em;
+  background: transparent;
+}
+
+.data-table thead th {
+  text-align: left;
+  padding: 12px 16px;
+  background: rgba(255,255,255,0.15);
+  border-bottom: 2px solid rgba(255,255,255,0.2);
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: rgba(255,255,255,0.75);
+  white-space: nowrap;
+}
+
+.data-table tbody td {
+  padding: 13px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+  color: #fff;
+}
+
+.data-table tbody tr:last-child td { border-bottom: none; }
+.data-table tbody tr:hover td      { background: rgba(255,255,255,0.08); }
+
+.data-table .empty td {
+  text-align: center;
+  color: rgba(255,255,255,0.5);
+  padding: 36px;
+  font-style: italic;
+  font-size: 0.9em;
+}
+
+/* ─── Percent Pills ─────────────────────── */
+.pct {
+  display: inline-block;
+  padding: 3px 11px;
+  border-radius: 20px;
+  font-weight: 700;
+  font-size: 0.86em;
+}
+.pct-ok       { background: #e8f5e9; color: #2e7d32; }
+.pct-warning  { background: #fff8e1; color: #e65100; }
+.pct-critical { background: #fdecea; color: #b71c1c; }
+
+/* ─── Responsive ────────────────────────── */
+@media (max-width: 768px) {
+  body { padding: 12px 10px; }
+  .card { padding: 20px 16px; }
+  .stats-grid { grid-template-columns: 1fr 1fr; }
+  .stat-value { font-size: 1.8em; }
+  .chart-wrap { height: 240px; }
+}
+
+@media (max-width: 480px) {
+  .stats-grid { grid-template-columns: 1fr; }
+}

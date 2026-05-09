@@ -239,12 +239,13 @@ h3 {
     background-color: var(--dot-bg);
 }
 
+/* ... [Global styles and scrollbar kept as-is] ... */
+
 .online.youtube .dot,
 .online.rumble .dot, 
 .online.twitch .dot,
 .online.vaughn .dot,
 .online.kick .dot,
-.online.odysee .dot,
 .online.parti .dot {   
     width: 14px;
     height: 14px;
@@ -260,8 +261,45 @@ h3 {
 .online.rumble .dot   { background-image: url("/images/rumble.png"); }
 .online.vaughn .dot   { background-image: url("/images/Vaughn.png"); }
 .online.kick .dot     { background-image: url("/images/kick.png"); }
-.online.odysee .dot   { background-image: url("/images/Odysee.png"); }
 .online.parti .dot    { background-image: url("/images/parti.png"); }
+
+/* ... [Donation, Buttons, Footer kept as-is] ... */
+
+/* YouTube - red */
+.inline-player-container.youtube {
+    border-color: #ff0000;
+    box-shadow: 0 5px 20px rgba(255, 0, 0, 0.3);
+}
+
+/* Twitch - purple */
+.inline-player-container.twitch {
+    border-color: #9147FF;
+    box-shadow: 0 5px 20px rgba(145, 71, 255, 0.3);
+}
+
+/* Kick - green */
+.inline-player-container.kick {
+    border-color: #53FC18;
+    box-shadow: 0 5px 20px rgba(83, 252, 24, 0.3);
+}
+
+/* Rumble - green */
+.inline-player-container.rumble {
+    border-color: #85C742;
+    box-shadow: 0 5px 20px rgba(133, 199, 66, 0.3);
+}
+
+/* Vaughn - blue */
+.inline-player-container.vaughn {
+    border-color: #5EA4DE;
+    box-shadow: 0 5px 20px rgba(94, 164, 222, 0.3);
+}
+
+/* Parti - dark green */
+.inline-player-container.parti {
+    border-color: #00CF91;
+    box-shadow: 0 5px 20px rgba(0, 207, 145, 0.3);
+}
 
 /* =========================
    Donation / Cards Section

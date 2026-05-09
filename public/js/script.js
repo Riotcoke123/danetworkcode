@@ -46,15 +46,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     return null;
   }
 
-  /**
-   * Route Odysee HLS URLs through the server-side proxy to avoid
-   * CORS errors — their CDNs don't send Access-Control-Allow-Origin headers.
-   */
-  function proxyHls(url) {
-    if (!url) return null;
-    return `/api/proxy/hls?url=${encodeURIComponent(url)}`;
-  }
-
   /** Attach HLS.js to a video element with error fallback to native src */
   function attachHls(video, src) {
     if (window.Hls && window.Hls.isSupported()) {
@@ -65,13 +56,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (data.fatal) {
           console.warn('HLS.js fatal error', data.type, data.details);
           hls.destroy();
-          // Last-ditch: try native
           video.src = src;
           video.play().catch(() => {});
         }
       });
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      // Safari native HLS
       video.src = src;
     } else {
       video.src = src;
@@ -84,7 +73,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (p === "youtube")  return data.url || `https://youtube.com/@${data.username}`;
     if (p === "kick")     return `https://kick.com/${data.username}`;
     if (p === "vaughn")   return `https://vaughn.live/${data.username}`;
-    if (p === "odysee")   return data.url || `https://odysee.com/@${data.username}`;
     if (p === "parti")    return `https://parti.com/${data.username}`;
     if (p === "rumble")   return data.url || `https://rumble.com/c/${data.username}`;
     return data.url || "#";
@@ -93,7 +81,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   /** Player handling */
   function closePlayer() {
     if (activePlayerContainer) {
-      // Cleanup: Stop the stream and destroy the player instance
       const video = activePlayerContainer.querySelector("video");
       if (video && video._flvPlayer) {
         video._flvPlayer.pause();
@@ -187,7 +174,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         const streamUrl = `https://stream-cdn-iad3.vaughnsoft.net/play/live_${data.username}.flv`;
 
-        // Check for mpegts or flv.js library
         const FLVEngine = window.mpegjs || window.flvjs;
 
         if (FLVEngine && FLVEngine.isSupported()) {
@@ -195,26 +181,12 @@ document.addEventListener("DOMContentLoaded", async () => {
           player.attachMediaElement(video);
           player.load();
           player.play();
-          video._flvPlayer = player; // Attach to video object for easy cleanup
+          video._flvPlayer = player;
         } else {
           playerBody.innerHTML = `<div class="error" style="color:white; padding:10px;">FLV Library missing</div>`;
           return;
         }
 
-        playerBody.appendChild(video);
-      }
-
-      /** ---------- ODYSEE (HLS via proxy) ---------- */
-      else if (platform === "odysee" && isOnline && data.m3u8) {
-        const video = document.createElement("video");
-        video.controls = true;
-        video.autoplay = true;
-        video.muted = false;
-        video.style.width = "100%";
-        video.style.height = "100%";
-
-        // Route through server proxy — Odysee CDN blocks cross-origin requests
-        attachHls(video, proxyHls(data.m3u8));
         playerBody.appendChild(video);
       }
 
@@ -244,7 +216,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       /** ---------- OFFLINE VIDEO HANDLING ---------- */
       else {
-        // KICK - Offline m3u8 playback
         if (platform === "kick" && (data.m3u8 || data.vod_id)) {
           const kickSrc = data.m3u8 || data.vod_id;
           const video = document.createElement("video");
@@ -258,7 +229,6 @@ document.addEventListener("DOMContentLoaded", async () => {
           playerBody.appendChild(video);
         }
 
-        // TWITCH - Offline VOD playback
         else if (platform === "twitch" && data.vod_id) {
           const iframe = document.createElement("iframe");
           iframe.src = `https://player.twitch.tv/?video=${data.vod_id}&parent=${location.hostname}&autoplay=true&muted=false`;
@@ -269,7 +239,6 @@ document.addEventListener("DOMContentLoaded", async () => {
           playerBody.appendChild(iframe);
         }
 
-        // YOUTUBE - Offline video playback
         else if (platform === "youtube" && (data.vod_url || data.url)) {
           const targetUrl = data.vod_url || data.url;
           const vid = extractYouTubeVideoId(targetUrl);
@@ -282,50 +251,15 @@ document.addEventListener("DOMContentLoaded", async () => {
             iframe.frameBorder = "0";
             playerBody.appendChild(iframe);
           } else {
-            // No offline message, just leave empty
             playerBody.innerHTML = ``;
           }
         }
 
-        // ODYSEE - Offline VOD: embed iframe if vod_url available, else proxy last HLS stream
-        else if (platform === "odysee" && (data.vod_url || data.m3u8)) {
-          if (data.vod_url) {
-            // Derive embed URL from the VOD page URL:
-            // e.g. https://odysee.com/@channel:id/video:id
-            //   -> https://odysee.com/$/embed/@channel:id/video:id?autoplay=1
-            let embedPath;
-            try {
-              embedPath = new URL(data.vod_url).pathname;
-            } catch (_) {
-              embedPath = data.vod_url.replace(/^https?:\/\/odysee\.com/, "");
-            }
-            const iframe = document.createElement("iframe");
-            iframe.src = `https://odysee.com/$/embed${embedPath}?autoplay=1`;
-            iframe.allow = "autoplay; fullscreen";
-            iframe.width = "100%";
-            iframe.height = "100%";
-            iframe.frameBorder = "0";
-            playerBody.appendChild(iframe);
-          } else {
-            // Fallback: replay last known live stream URL via proxy
-            const video = document.createElement("video");
-            video.controls = true;
-            video.autoplay = true;
-            video.muted = false;
-            video.style.width = "100%";
-            video.style.height = "100%";
-            attachHls(video, proxyHls(data.m3u8));
-            playerBody.appendChild(video);
-          }
-        }
-
-        // RUMBLE - Offline VOD: open in new tab, no inline embed
         else if (platform === "rumble" && data.vod_url) {
           window.open(data.vod_url, "_blank");
           closePlayer();
         }
 
-        // Default - no offline message
         else {
           playerBody.innerHTML = ``;
         }
@@ -359,7 +293,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       streamers.forEach((data) => {
         const isOnline = data.status === "online";
         const platform = (data.platform || "").toLowerCase();
-        const displayName = (platform === "kick" || platform === "youtube" || platform === "odysee" || platform === "rumble")
+        const displayName = (platform === "kick" || platform === "youtube" || platform === "rumble")
             ? data.display_name || data.username
             : data.username;
 
@@ -382,7 +316,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         `;
 
         row.onclick = () => {
-          // Offline Rumble or YouTube: go straight to the VOD URL if available
           if (!isOnline && data.vod_url && (platform === "rumble" || platform === "youtube")) {
             window.open(data.vod_url, "_blank");
           } else if (platform === "youtube" && data.url) {
@@ -399,7 +332,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         row.onmouseleave = (e) => {
           if (previewTimeout) clearTimeout(previewTimeout);
-          // Only close if the mouse didn't move into the player itself
           setTimeout(() => {
             const hovered = document.querySelectorAll(':hover');
             const isHoveringPlayer = Array.from(hovered).some(el => el.classList.contains('inline-player-container'));

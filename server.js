@@ -2581,9 +2581,31 @@ const app = express();
    ========================================================================== */
 
 // Helmet: sets secure HTTP headers (X-Frame-Options, HSTS, CSP, etc.)
+// ── Security headers ────────────────────────────────────────────────────────
+// CSP: allow same-origin scripts/styles + the CDN hosts this app fetches from.
+// Adjust 'script-src' / 'style-src' if you add more CDN dependencies.
 app.use(helmet({
-  contentSecurityPolicy: false, // disabled to avoid breaking inline scripts/styles in existing views
-  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc:     ["'self'"],
+      scriptSrc:      ["'self'", "'unsafe-inline'"],   // narrow further once inline scripts are moved to files
+      styleSrc:       ["'self'", "'unsafe-inline'"],
+      imgSrc:         ["'self'", "data:", "https:"],   // streamer avatars come from many CDNs
+      connectSrc:     ["'self'"],
+      fontSrc:        ["'self'", "https:", "data:"],
+      objectSrc:      ["'none'"],
+      frameAncestors: ["'none'"],                      // clickjacking protection
+      upgradeInsecureRequests: [],
+    },
+  },
+  crossOriginEmbedderPolicy: false,   // keep off; streamer images are cross-origin
+  crossOriginResourcePolicy: { policy: 'same-site' },
+  referrerPolicy:            { policy: 'strict-origin-when-cross-origin' },
+  hsts: {
+    maxAge:            60 * 60 * 24 * 365, // 1 year
+    includeSubDomains: true,
+    preload:           true,
+  },
 }));
 
 // General rate limiter — 200 requests per 5 minutes per IP
@@ -2605,27 +2627,64 @@ const authLimiter = rateLimit({
   message: { error: 'Too many auth attempts, please try again later.' },
 });
 
+// Dedicated limiter for admin/sensitive routes — 30 requests per 10 minutes per IP
+const adminLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many admin requests, please try again later.' },
+});
+
 // Admin auth middleware — checks Authorization: Bearer <token> or ?token=<token>
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
+
+// Warn loudly at startup if the token is still the default placeholder
+if (!ADMIN_TOKEN || ADMIN_TOKEN === 'CHANGE_ME_TO_A_STRONG_RANDOM_SECRET') {
+  console.error(
+    '\n⚠️  WARNING: ADMIN_TOKEN is not set or is still the default placeholder.\n' +
+    '   All admin routes (/healthz, /youtube-dashboard, /api/youtube/*) will return 503.\n' +
+    '   Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"\n'
+  );
+}
+
 function requireAdminToken(req, res, next) {
-  if (!ADMIN_TOKEN) {
-    // No token configured — block access entirely rather than allow open access
+  if (!ADMIN_TOKEN || ADMIN_TOKEN === 'CHANGE_ME_TO_A_STRONG_RANDOM_SECRET') {
     return res.status(503).json({ error: 'Admin access not configured.' });
   }
   const authHeader = req.headers['authorization'] || '';
   const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   const queryToken = req.query.token;
   const provided = bearer || queryToken;
-  if (!provided || provided !== ADMIN_TOKEN) {
+
+  // Use timing-safe comparison to prevent timing-based token enumeration attacks
+  if (!provided) {
     return res.status(401).json({ error: 'Unauthorized.' });
   }
-  // Remove token from query so it doesn't leak into logs downstream
+  try {
+    const providedBuf = Buffer.from(provided);
+    const expectedBuf = Buffer.from(ADMIN_TOKEN);
+    // timingSafeEqual requires same length buffers
+    const match =
+      providedBuf.length === expectedBuf.length &&
+      crypto.timingSafeEqual(providedBuf, expectedBuf);
+    if (!match) {
+      return res.status(401).json({ error: 'Unauthorized.' });
+    }
+  } catch {
+    return res.status(401).json({ error: 'Unauthorized.' });
+  }
+
+  // Remove token from query so it doesn't leak into downstream logs
   delete req.query.token;
   next();
 }
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json({ limit: '1mb' }));
+
+// Never advertise the server stack
+app.disable('x-powered-by');
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'views', 'index.html'));
@@ -2708,10 +2767,10 @@ setInterval(async () => {
         console.error('Failed to trigger Rumble scrape. Is the Python app running on port 5000?', e.message);
     }
 }, 70000); // 70 seconds
-app.get('/youtube-dashboard', requireAdminToken, (req, res) => {
+app.get('/youtube-dashboard', adminLimiter, requireAdminToken, (req, res) => {
      res.sendFile(path.join(__dirname, 'youtube-quota-dashboard.html'));
    });
-app.get('/api/youtube/quota', requireAdminToken, (req, res) => {
+app.get('/api/youtube/quota', adminLimiter, requireAdminToken, (req, res) => {
   const dailyQuotaRemaining = youtubeQuotaDailyLimit - youtubeQuotaUsed;
   const dailyBudgetRemaining = youtubeDailyBudget - youtubeQuotaUsed;
   const monthlyBudgetRemaining = youtubeMonthlyBudget - youtubeMonthlyQuotaUsed;
@@ -2773,7 +2832,7 @@ app.get('/api/youtube/quota', requireAdminToken, (req, res) => {
 });
 
 // YouTube API Audit Endpoint - For YouTube compliance audits
-app.get('/api/youtube/audit', requireAdminToken, (req, res) => {
+app.get('/api/youtube/audit', adminLimiter, requireAdminToken, (req, res) => {
   const { days, format } = req.query;
   const daysToShow = Math.min(Math.max(parseInt(days) || 90, 1), 365); // clamp 1–365
   
@@ -2866,7 +2925,7 @@ app.get('/api/youtube/audit', requireAdminToken, (req, res) => {
 app.get('/youtube-quota-dashboard.css', (req, res) => {
   res.sendFile(path.join(__dirname, 'youtube-quota-dashboard.css'));
 });
-app.get('/healthz', requireAdminToken, (req, res) => {
+app.get('/healthz', adminLimiter, requireAdminToken, (req, res) => {
   const dailyQuotaPercentUsed = ((youtubeQuotaUsed / youtubeQuotaDailyLimit) * 100).toFixed(2);
   const monthlyBudgetPercentUsed = ((youtubeMonthlyQuotaUsed / youtubeMonthlyBudget) * 100).toFixed(2);
   
@@ -2887,6 +2946,18 @@ app.get('/healthz', requireAdminToken, (req, res) => {
       fallback_active: youtubeApiFallbackUsed
     }
   });
+});
+
+// ── Catch-all 404 — don't expose route structure or stack traces ──────────
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not found.' });
+});
+
+// ── Global error handler ───────────────────────────────────────────────────
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, _next) => {
+  console.error('Unhandled express error:', err);
+  res.status(500).json({ error: 'Internal server error.' });
 });
 
 app.listen(PORT, () => {

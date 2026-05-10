@@ -239,8 +239,6 @@ h3 {
     background-color: var(--dot-bg);
 }
 
-/* ... [Global styles and scrollbar kept as-is] ... */
-
 .online.youtube .dot,
 .online.rumble .dot, 
 .online.twitch .dot,
@@ -363,6 +361,20 @@ h3 {
 .footer-links a { font-weight: bold; transition: opacity 0.2s; }
 .footer-links a:hover { opacity: 0.8; }
 
+/* =========================
+   Advertisement Containers
+   ========================= */
+.ad-container {
+    text-align: center;
+    margin: 30px auto;
+    width: 100%;
+}
+
+.ad-container img {
+    display: inline-block;
+    max-width: 100%;
+    height: auto;
+}
 
 /* =========================
    Responsive Styles

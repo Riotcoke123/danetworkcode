@@ -1,17 +1,5 @@
 require('dotenv').config();
 
-/* ==========================================================================
-   SECURITY NOTE
-   * fail2ban or a similar SSH brute-force protection is recommended on the
-     host running this server to block repeated failed login attempts.
-   * Sensitive admin routes (/healthz, /youtube-dashboard, /api/youtube/*)
-     require a Bearer token via the Authorization header or ?token= query param.
-     Set ADMIN_TOKEN in your .env file.
-   ========================================================================== */
-
-/* ==========================================================================
-   IMPORTS
-   ========================================================================== */
 const express = require('express');
 const path = require('path');
 const Database = require('better-sqlite3');
@@ -195,44 +183,21 @@ INSERT INTO streamers (
   strftime('%Y-%m-%dT%H:%M:%SZ','now')
 )
 ON CONFLICT(id) DO UPDATE SET
-  display_name=COALESCE(excluded.display_name, streamers.display_name),
-  status=excluded.status,
-  viewers=excluded.viewers,
-  viewers_raw=excluded.viewers_raw,
-  title=CASE
-    WHEN excluded.status='online'
-    THEN excluded.title
-    ELSE streamers.title
-  END,
-  photo=CASE
-    WHEN excluded.photo IS NOT NULL
-    THEN excluded.photo
-    ELSE streamers.photo
-  END,
-  url=CASE
-    WHEN excluded.status='online' OR streamers.url IS NULL
-    THEN excluded.url
-    ELSE streamers.url
-  END,
-  m3u8=CASE
-    WHEN excluded.status='online'
-    THEN excluded.m3u8
-    ELSE streamers.m3u8
-  END,
-  vod_id=CASE
-    WHEN excluded.status='online' OR excluded.vod_id IS NOT NULL
-    THEN excluded.vod_id
-    ELSE streamers.vod_id
-  END,
-  last_broadcast_time=CASE
-    WHEN excluded.last_broadcast_time IS NOT NULL
-    THEN excluded.last_broadcast_time
-    WHEN streamers.status='online'
-     AND excluded.status='offline'
-    THEN strftime('%Y-%m-%dT%H:%M:%SZ','now')
+  display_name        = COALESCE(excluded.display_name, streamers.display_name),
+  status              = excluded.status,
+  viewers             = excluded.viewers,
+  viewers_raw         = excluded.viewers_raw,
+  title               = CASE WHEN excluded.status='online' THEN excluded.title ELSE streamers.title END,
+  photo               = COALESCE(excluded.photo, streamers.photo),
+  url                 = CASE WHEN excluded.status='online' OR streamers.url IS NULL THEN excluded.url ELSE streamers.url END,
+  m3u8                = CASE WHEN excluded.status='online' THEN excluded.m3u8 ELSE streamers.m3u8 END,
+  vod_id              = COALESCE(excluded.vod_id, streamers.vod_id),
+  last_broadcast_time = CASE
+    WHEN excluded.last_broadcast_time IS NOT NULL THEN excluded.last_broadcast_time
+    WHEN streamers.status='online' AND excluded.status='offline' THEN strftime('%Y-%m-%dT%H:%M:%SZ','now')
     ELSE streamers.last_broadcast_time
   END,
-  updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+  updated_at          = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 `);
 
 const deleteRemovedStreamers = db.prepare(`
@@ -2227,6 +2192,7 @@ async function fetchPartiAll() {
    SCRAPER LOOP WITH KICK SUPPORT
    ========================================================================== */
 let RUNNING = false;
+let shutdownRequested = false; // set on SIGINT/SIGTERM to stop browser restarts
 let browserInstance = null;
 let scrapeCount = 0;
 // 3-core VPS: Chrome renderer processes accumulate memory faster under CPU pressure.
@@ -2234,25 +2200,22 @@ let scrapeCount = 0;
 const MAX_SCRAPES_BEFORE_RESTART = Number(process.env.MAX_SCRAPES_BEFORE_RESTART || 20);
 
 async function closeBrowserSafely() {
-  if (browserInstance) {
+  const b = browserInstance;
+  if (!b) return;
+  // Null out immediately so re-entrant calls (e.g. the 'disconnected' event
+  // handler firing while we're mid-close) become no-ops.
+  browserInstance = null;
+  try {
+    const pages = await b.pages().catch(() => []);
+    await Promise.all(pages.map(page =>
+      page.isClosed() ? Promise.resolve() : page.close().catch(() => {})
+    ));
+    await b.close().catch(() => {});
+  } catch (e) {
+    console.log('Browser close error:', e.message);
     try {
-      const pages = await browserInstance.pages();
-      await Promise.all(pages.map(page => 
-        page.close().catch(e => console.log('Page close error:', e.message))
-      ));
-      await browserInstance.close();
-    } catch (e) {
-      console.log('Browser close error:', e.message);
-      try {
-        if (browserInstance.process()) {
-          browserInstance.process().kill('SIGKILL');
-        }
-      } catch (killErr) {
-        console.log('Force kill error:', killErr.message);
-      }
-    } finally {
-      browserInstance = null;
-    }
+      if (b.process()) b.process().kill('SIGKILL');
+    } catch (_) {}
   }
 }
 
@@ -2359,6 +2322,8 @@ async function runScraper() {
 
     async function ensureBrowser() {
       if (browser && browser.isConnected()) return;
+      // Don't relaunch during graceful shutdown — let in-flight tasks fail fast.
+      if (shutdownRequested) throw new Error('Shutdown in progress — not relaunching browser');
       // If a restart is already in flight, wait for it instead of spawning another
       if (browserRestartPromise) {
         await browserRestartPromise;
@@ -2492,10 +2457,6 @@ async function runScraper() {
       ...parseList(process.env.VAUGHN_USERNAMES).map(u => makeId('vaughn', u.toLowerCase())),
       ...parseList(process.env.YOUTUBE_USERNAMES).map(u => makeId('youtube', u.toLowerCase())),
       ...parseList(process.env.PARTI_USER_IDS).map(id => makeId('parti', String(id))),
-      // Rumble rows are written by the external rumble_monitor.py process.
-      // Include them here so deleteRemovedStreamers never wipes them.
-      ...parseList(process.env.RUMBLE_CHANNELS).map(u => makeId('rumble', u.toLowerCase())),
-      ...parseList(process.env.RUMBLE_USERS).map(u => makeId('rumble', u.toLowerCase())),
     ];
 
     const tasks = [
@@ -2556,18 +2517,10 @@ async function runScraper() {
   } catch (e) {
     LAST_SCRAPE_ERROR = e.message;
     console.error('Scraper error:', e);
-    
-    // Force browser restart on error
-    if (browser) {
-      console.log('Forcing browser close due to error...');
-      await closeBrowserSafely();
-      scrapeCount = 0; // Reset counter on error
-    }
+    scrapeCount = 0; // Reset counter on error
   } finally {
     RUNNING = false;
-    if (browser) {
-      await closeBrowserSafely();
-    }
+    await closeBrowserSafely();
   }
 }
 
@@ -2758,15 +2711,6 @@ app.get('/api/stats', (req, res) => {
     last_scrape_at: LAST_SCRAPE_AT
   });
 });
-setInterval(async () => {
-    try {
-        // Triggering the Python scraper every 70 seconds
-        await fetch('http://localhost:5000/scrape-rumble');
-        console.log(`[${new Date().toISOString()}] Rumble scrape triggered`);
-    } catch (e) {
-        console.error('Failed to trigger Rumble scrape. Is the Python app running on port 5000?', e.message);
-    }
-}, 70000); // 70 seconds
 app.get('/youtube-dashboard', adminLimiter, requireAdminToken, (req, res) => {
      res.sendFile(path.join(__dirname, 'youtube-quota-dashboard.html'));
    });
@@ -2911,7 +2855,7 @@ app.get('/api/youtube/audit', adminLimiter, requireAdminToken, (req, res) => {
       description: 'Multi-platform livestream monitoring service',
       monitored_channels: parseList(process.env.YOUTUBE_USERNAMES).length,
       check_interval_seconds: CHECK_INTERVAL / 1000,
-      platforms_monitored: ['YouTube', 'Kick', 'Twitch', 'Rumble', 'Vaughn', 'Parti']
+      platforms_monitored: ['YouTube', 'Kick', 'Twitch', 'Vaughn', 'Parti']
     }
   };
   
@@ -2974,6 +2918,7 @@ app.listen(PORT, () => {
 });
 
 async function gracefulShutdown(signal) {
+  shutdownRequested = true; // stop ensureBrowser() from relaunching Chrome
   console.log(`\n${signal} received, shutting down gracefully...`);
   await closeBrowserSafely();
   db.close();

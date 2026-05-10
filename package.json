@@ -1,7 +1,7 @@
 {
-  "name": "streamer-list",
-  "version": "1.0.1",
-  "description": "Multi-platform live streamer scraper",
+  "name": "danetworkcode-streamer-scraper",
+  "version": "1.0.3",
+  "description": "Multi-platform live streamer scraper and monitoring dashboard",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
@@ -16,17 +16,21 @@
     "youtube",
     "twitch",
     "kick",
+    "vaughn",
+    "parti",
     "streaming",
     "scraper",
     "api",
     "puppeteer"
   ],
-  "author": "",
+  "author": "Riotcoke123",
   "license": "MIT",
   "dependencies": {
     "better-sqlite3": "^9.6.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
     "node-fetch": "^3.3.2",
     "p-limit": "^3.1.0",
     "puppeteer": "^24.15.0",

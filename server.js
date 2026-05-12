@@ -2529,6 +2529,13 @@ async function runScraper() {
    ========================================================================== */
 const app = express();
 
+// Trust the first hop (your reverse proxy / load balancer).
+// This lets Express read X-Forwarded-For so express-rate-limit can identify
+// the real client IP instead of the proxy IP.
+// Set to the number of proxies in front of this server (1 for nginx/Caddy/etc.).
+// Use a specific IP or CIDR string (e.g. '10.0.0.0/8') to be more restrictive.
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1));
+
 /* ==========================================================================
    SECURITY MIDDLEWARE
    ========================================================================== */

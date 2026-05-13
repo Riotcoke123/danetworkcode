@@ -294,6 +294,8 @@ const YOUTUBE_API_BASE  = process.env.YOUTUBE_API_BASE  || 'https://www.googleap
 const LIVEPEER_CDN_BASE = process.env.LIVEPEER_CDN_BASE || 'https://livepeercdn.studio/hls';
 const PARTI_API_BASE    = process.env.PARTI_API_BASE    || 'https://prod-api.parti.com';
 const PARTI_WEB_BASE    = process.env.PARTI_WEB_BASE    || 'https://parti.com';
+const PUMPFUN_API_BASE  = process.env.PUMPFUN_API_BASE  || 'https://frontend-api-v3.pump.fun';
+const PUMPFUN_WEB_BASE  = process.env.PUMPFUN_WEB_BASE  || 'https://pump.fun';
 const PARTI_LIVE_PATH   = process.env.PARTI_LIVE_PATH   || '/parti_v2/profile/get_livestream_channel_info/live';
 const PARTI_LIVE_LIMIT  = Number(process.env.PARTI_LIVE_LIMIT  || 100);
 
@@ -2189,8 +2191,180 @@ async function fetchPartiAll() {
 }
 
 /* ==========================================================================
-   SCRAPER LOOP WITH KICK SUPPORT
+   PUMP.FUN SCRAPER
    ========================================================================== */
+// Pump.fun streamers each create a dedicated "streaming coin".
+// The livestream is tied to that coin's MINT ADDRESS — so PUMPFUN_MINTS
+// holds a comma-separated list of Solana mint addresses to track.
+//
+// Example in .env:
+//   PUMPFUN_MINTS=21rKrtBzibPAZHAHQRzGiGDSh7XimCKB2a8VgsjZpump,AnotherMint...
+//
+// Strategy:
+//   1. One bulk call to /coins/currently-live → build a mint → live-item map
+//   2. For each tracked mint:
+//        ONLINE  → viewer count + stream title from the bulk payload
+//                  + creator display name + photo (also in payload)
+//        OFFLINE → call GET /coins/{mint} to get creator profile
+//                  (display name, photo) for a fresh offline card
+//   3. last_broadcast_time is managed automatically by upsertStreamer SQL
+//      (stamps the time when a streamer flips online → offline).
+
+const pumpfunHeaders = () => ({
+  'Accept':             'application/json, */*',
+  'Origin':             'https://pump.fun',
+  'Referer':            'https://pump.fun/',
+  'User-Agent':         process.env.USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
+  'sec-ch-ua':          '"Chromium";v="144", "Not-A.Brand";v="24", "Google Chrome";v="144"',
+  'sec-ch-ua-mobile':   '?0',
+  'sec-ch-ua-platform': '"Windows"',
+  'sec-fetch-dest':     'empty',
+  'sec-fetch-mode':     'cors',
+  'sec-fetch-site':     'same-site',
+  'dnt':                '1',
+});
+
+async function fetchPumpfunAll() {
+  const pumpfunMints = parseList(process.env.PUMPFUN_MINTS);
+  if (!pumpfunMints.length) return [];
+
+  const headers = pumpfunHeaders();
+
+  // ── Step 1: one bulk call for all currently-live pump.fun streams ─────────
+  // Response is an array of coin objects enriched with livestream fields.
+  // We build a mint → item map so each tracked mint is checked in O(1).
+  const liveByMint = new Map(); // mint (lowercase) → live payload
+  try {
+    const liveRes = await fetch(
+      `${PUMPFUN_API_BASE}/coins/currently-live?limit=500`,
+      { headers, signal: AbortSignal.timeout(15_000) }
+    );
+    if (liveRes.ok) {
+      const body = await liveRes.json();
+      const items = Array.isArray(body)        ? body
+                  : Array.isArray(body?.data)  ? body.data
+                  : Array.isArray(body?.items) ? body.items
+                  : [];
+      console.log(`Pump.fun bulk live: ${items.length} live streams returned`);
+      for (const item of items) {
+        const m = (item?.mint || '').toLowerCase();
+        if (m) liveByMint.set(m, item);
+      }
+    } else {
+      console.error(`Pump.fun bulk live HTTP ${liveRes.status}`);
+    }
+  } catch (err) {
+    console.error('Pump.fun bulk live fetch error:', err.message);
+  }
+
+  // ── Step 2: resolve each tracked mint in parallel ─────────────────────────
+  const results = await Promise.all(pumpfunMints.map(async (rawMint) => {
+    const mint = rawMint.trim();
+    if (!mint) return null;
+
+    const mintLower = mint.toLowerCase();
+
+    try {
+      const liveItem = liveByMint.get(mintLower) || null;
+      const isLive   = !!liveItem;
+
+      let displayName = null;
+      let photo       = null;
+      let viewersRaw  = 0;
+      let title       = null;
+      let coinName    = null;
+
+      if (isLive) {
+        // ── ONLINE ──────────────────────────────────────────────────────────
+        // Pump.fun embeds creator profile fields directly in the live payload.
+        displayName = liveItem?.username          // creator's pump.fun username
+                   || liveItem?.creator_username
+                   || liveItem?.name              // fallback: coin name
+                   || mint;
+
+        photo       = liveItem?.profile_image         // creator avatar
+                   || liveItem?.creator_profile_image
+                   || liveItem?.image_uri             // coin image as last resort
+                   || null;
+
+        // Viewer count — pump.fun has used several field names across versions
+        viewersRaw  = Number(
+                        liveItem?.live_viewer_count
+                     || liveItem?.viewer_count
+                     || liveItem?.viewers
+                     || liveItem?.participant_count
+                     || 0
+                      );
+
+        // The coin's name serves as the stream title on pump.fun
+        title       = liveItem?.name
+                   || liveItem?.title
+                   || liveItem?.description
+                   || null;
+
+        coinName    = liveItem?.name || null;
+
+        console.log(`Pump.fun ${displayName} (${mint.slice(0,8)}…): ONLINE viewers=${viewersRaw}`);
+
+      } else {
+        // ── OFFLINE ─────────────────────────────────────────────────────────
+        // Fetch the coin record to get creator profile info for the offline card.
+        try {
+          const coinRes = await fetch(
+            `${PUMPFUN_API_BASE}/coins/${encodeURIComponent(mint)}`,
+            { headers, signal: AbortSignal.timeout(10_000) }
+          );
+          if (coinRes.ok) {
+            const coin  = await coinRes.json();
+            coinName    = coin?.name || null;
+
+            // Creator profile may be nested under coin.creator_profile or top-level
+            displayName = coin?.username
+                       || coin?.creator_username
+                       || coin?.creator_profile?.username
+                       || coinName
+                       || mint;
+
+            photo       = coin?.profile_image
+                       || coin?.creator_profile_image
+                       || coin?.creator_profile?.profile_image
+                       || coin?.image_uri        // coin image fallback
+                       || null;
+          } else if (coinRes.status !== 404) {
+            console.warn(`Pump.fun coin HTTP ${coinRes.status} for mint ${mint.slice(0,8)}…`);
+          }
+        } catch (coinErr) {
+          console.warn(`Pump.fun coin fetch error for ${mint.slice(0,8)}…:`, coinErr.message);
+        }
+
+        displayName = displayName || mint.slice(0, 8) + '…';
+        console.log(`Pump.fun ${displayName} (${mint.slice(0,8)}…): OFFLINE`);
+      }
+
+      return {
+        id:                  makeId('pumpfun', mintLower),
+        platform:            'pumpfun',
+        username:            mintLower,           // mint is the stable identifier
+        display_name:        displayName,
+        status:              isLive ? 'online' : 'offline',
+        viewers_raw:         viewersRaw,
+        viewers:             formatViewers(viewersRaw),
+        title,
+        photo,
+        url:                 `${PUMPFUN_WEB_BASE}/coin/${mint}`,
+        m3u8:                null,    // pump.fun uses LiveKit — no public HLS URL
+        vod_id:              null,
+        last_broadcast_time: null,    // auto-managed by upsertStreamer SQL
+      };
+
+    } catch (err) {
+      console.error(`Pump.fun error for mint ${mint.slice(0,8)}…:`, err.message);
+      return null;
+    }
+  }));
+
+  return results.filter(Boolean);
+}
 let RUNNING = false;
 let shutdownRequested = false; // set on SIGINT/SIGTERM to stop browser restarts
 let browserInstance = null;
@@ -2457,6 +2631,7 @@ async function runScraper() {
       ...parseList(process.env.VAUGHN_USERNAMES).map(u => makeId('vaughn', u.toLowerCase())),
       ...parseList(process.env.YOUTUBE_USERNAMES).map(u => makeId('youtube', u.toLowerCase())),
       ...parseList(process.env.PARTI_USER_IDS).map(id => makeId('parti', String(id))),
+      ...parseList(process.env.PUMPFUN_MINTS).map(m => makeId('pumpfun', m.trim().toLowerCase())),
     ];
 
     const tasks = [
@@ -2474,6 +2649,8 @@ async function runScraper() {
       ),
       // Parti: one bulk call instead of N per-user calls
       limit(() => fetchPartiAll()),
+      // Pump.fun: one bulk live call + per-mint coin fallback for offline
+      limit(() => fetchPumpfunAll()),
     ];
 
     // Master scrape deadline — if any task hangs (e.g. real-browser CF solver),
@@ -2920,6 +3097,7 @@ app.listen(PORT, () => {
   console.log(`YouTube Monthly quota limit: ${youtubeQuotaMonthlyLimit} units/month`);
   console.log(`YouTube Monthly budget (${(youtubeMonthlyBudgetPercent * 100)}%): ${youtubeMonthlyBudget} units/month`);
   console.log(`YouTube Daily budget: ~${youtubeDailyBudget} units/day`);
+  console.log(`Pump.fun mints configured: ${parseList(process.env.PUMPFUN_MINTS).length}`);
   runScraper();
   setInterval(runScraper, CHECK_INTERVAL);
 });

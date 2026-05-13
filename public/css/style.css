@@ -244,7 +244,8 @@ h3 {
 .online.twitch .dot,
 .online.vaughn .dot,
 .online.kick .dot,
-.online.parti .dot {   
+.online.parti .dot,
+.online.pumpfun .dot {   
     width: 14px;
     height: 14px;
     background-color: transparent;
@@ -260,6 +261,7 @@ h3 {
 .online.vaughn .dot   { background-image: url("/images/Vaughn.png"); }
 .online.kick .dot     { background-image: url("/images/kick.png"); }
 .online.parti .dot    { background-image: url("/images/parti.png"); }
+.online.pumpfun .dot  { background-image: url("/images/pump.png"); }
 
 /* =========================
    Donation / Cards Section

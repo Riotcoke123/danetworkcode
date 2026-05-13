@@ -37,6 +37,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (p === "vaughn")   return `https://vaughn.live/${data.username}`;
     if (p === "parti")    return `https://parti.com/${data.username}`;
     if (p === "rumble")   return data.url || `https://rumble.com/c/${data.username}`;
+    if (p === "pumpfun")  return data.url || `https://pump.fun/coin/${data.username}`;
     return data.url || "#";
   }
 
@@ -66,7 +67,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       streamers.forEach((data) => {
         const isOnline = data.status === "online";
         const platform = (data.platform || "").toLowerCase();
-        const displayName = (platform === "kick" || platform === "youtube" || platform === "rumble")
+        const displayName = (platform === "kick" || platform === "youtube" || platform === "rumble" || platform === "pumpfun")
             ? data.display_name || data.username
             : data.username;
 

@@ -2222,6 +2222,9 @@ const pumpfunHeaders = () => ({
   'sec-fetch-mode':     'cors',
   'sec-fetch-site':     'same-site',
   'dnt':                '1',
+  ...(process.env.PUMPFUN_API_KEY && {
+    'Authorization': `Bearer ${process.env.PUMPFUN_API_KEY}`,
+  }),
 });
 
 async function fetchPumpfunAll() {
@@ -2287,19 +2290,12 @@ async function fetchPumpfunAll() {
                    || liveItem?.image_uri             // coin image as last resort
                    || null;
 
-        // Viewer count — pump.fun has used several field names across versions
-        viewersRaw  = Number(
-                        liveItem?.live_viewer_count
-                     || liveItem?.viewer_count
-                     || liveItem?.viewers
-                     || liveItem?.participant_count
-                     || 0
-                      );
+        // Viewer count — API field is num_participants
+        viewersRaw  = Number(liveItem?.num_participants || 0);
 
-        // The coin's name serves as the stream title on pump.fun
-        title       = liveItem?.name
-                   || liveItem?.title
-                   || liveItem?.description
+        // Stream title — livestream_title is the dedicated field; fall back to coin name
+        title       = liveItem?.livestream_title
+                   || liveItem?.name
                    || null;
 
         coinName    = liveItem?.name || null;
@@ -2352,7 +2348,7 @@ async function fetchPumpfunAll() {
         title,
         photo,
         url:                 `${PUMPFUN_WEB_BASE}/coin/${mint}`,
-        m3u8:                null,    // pump.fun uses LiveKit — no public HLS URL
+        m3u8:                null,
         vod_id:              null,
         last_broadcast_time: null,    // auto-managed by upsertStreamer SQL
       };
@@ -2365,6 +2361,155 @@ async function fetchPumpfunAll() {
 
   return results.filter(Boolean);
 }
+
+/**
+ * Scrape the live viewer count directly from a pump.fun coin page using Puppeteer.
+ *
+ * Called as a fallback inside fetchPumpfunAll() when the API returns 0 viewers
+ * for a stream that the bulk /coins/currently-live endpoint confirmed is live.
+ * pump.fun renders its viewer badge as a React component, so we need a real
+ * browser to get the value — a plain HTTP fetch won't work.
+ *
+ * Target selector (the <span> inside the viewer-count badge):
+ *   #coin-content-container > div >
+ *   div.w-full.rounded-lg.bg-\[\#000000\] > div > div > div > div > div >
+ *   div.pointer-events-none.absolute.inset-0.z-10.flex.h-full.w-full
+ *      .flex-col.justify-between.opacity-0.transition-opacity.duration-300
+ *      .data-\[visible\]\:opacity-100 >
+ *   div:nth-child(1) > div >
+ *   div.flex.cursor-pointer.items-center.gap-\[2px\] > div > span
+ *
+ * @param {string} mint  - The Solana mint address
+ * @returns {Promise<number>} - Parsed viewer count, or 0 on any failure
+ */
+async function scrapePumpfunViewers(mint) {
+  if (!browserInstance) {
+    console.warn(`scrapePumpfunViewers(${mint.slice(0, 8)}…): no browser available`);
+    return 0;
+  }
+
+  // CSS selector with Tailwind special characters escaped for querySelector.
+  // pump.fun uses classes like bg-[#000000], data-[visible]:opacity-100, gap-[2px]
+  // whose brackets/colons/hashes must be backslash-escaped in CSS selectors.
+  const VIEWER_SELECTOR =
+    '#coin-content-container > div > ' +
+    'div.w-full.rounded-lg.bg-\\[\\#000000\\] > div > div > div > div > div > ' +
+    'div.pointer-events-none.absolute.inset-0.z-10.flex.h-full.w-full.flex-col' +
+    '.justify-between.opacity-0.transition-opacity.duration-300' +
+    '.data-\\[visible\\]\\:opacity-100 > ' +
+    'div:nth-child(1) > div > ' +
+    'div.flex.cursor-pointer.items-center.gap-\\[2px\\] > div > span';
+
+  // Broader fallback: any span that's a sibling of the eye/viewer icon inside
+  // the overlay — catches pump.fun redesigns that keep the same layout but
+  // change Tailwind class names.
+  const FALLBACK_SELECTOR =
+    '#coin-content-container span[class*="text-white"]';
+
+  const page = await browserInstance.newPage();
+  try {
+    await optimizePage(page);
+
+    // networkidle2 waits until there are ≤2 in-flight network requests for 500 ms.
+    // This gives LiveKit's signalling WS time to connect and push the initial
+    // participant count before we try to read the DOM.
+    await page.goto(`${PUMPFUN_WEB_BASE}/coin/${encodeURIComponent(mint)}`, {
+      waitUntil: 'networkidle2',
+      timeout: 25_000,
+    });
+
+    // Wait up to 12 s for the exact target span to contain a non-zero digit.
+    // pump.fun renders "0" while LiveKit is still connecting; the real count
+    // arrives via WebSocket a few seconds later and React patches the DOM.
+    // ── Diagnostic: log what actually loaded so selector failures are debuggable ──
+    const pageInfo = await page.evaluate((primarySel, fallbackSel) => {
+      const container = document.querySelector('#coin-content-container');
+      const primaryEl = document.querySelector(primarySel);
+      const fallbackEl = document.querySelector(fallbackSel);
+
+      // Collect all spans inside the container for pattern matching
+      const allSpans = container
+        ? Array.from(container.querySelectorAll('span')).map(s => ({
+            text: s.textContent.trim().slice(0, 40),
+            cls:  s.className.slice(0, 120),
+          })).filter(s => s.text.length > 0)
+        : [];
+
+      // Collect viewer-count candidates: spans whose text looks like a number
+      const numericSpans = allSpans.filter(s => /^\d[\d,KkMm.]*$/.test(s.text));
+
+      return {
+        title:           document.title,
+        hasContainer:    !!container,
+        hasPrimary:      !!primaryEl,
+        primaryText:     primaryEl ? primaryEl.textContent.trim() : null,
+        hasFallback:     !!fallbackEl,
+        fallbackText:    fallbackEl ? fallbackEl.textContent.trim() : null,
+        numericSpans,                          // spans that look like numbers
+        containerSnippet: container
+          ? container.innerHTML.slice(0, 800)  // first 800 chars of container HTML
+          : null,
+      };
+    }, VIEWER_SELECTOR, FALLBACK_SELECTOR);
+
+    console.log(`scrapePumpfunViewers(${mint.slice(0, 8)}…) page diagnostics:`, JSON.stringify(pageInfo, null, 2));
+
+    let viewerText = null;
+
+    // Use primary selector if it matched
+    if (pageInfo.primaryText) {
+      viewerText = pageInfo.primaryText;
+
+    // Use fallback selector if it matched
+    } else if (pageInfo.fallbackText) {
+      viewerText = pageInfo.fallbackText;
+
+    // Use first numeric-looking span inside the container
+    } else if (pageInfo.numericSpans.length > 0) {
+      viewerText = pageInfo.numericSpans[0].text;
+      console.log(`scrapePumpfunViewers(${mint.slice(0, 8)}…): using numeric span fallback: "${viewerText}"`);
+
+    } else {
+      // Primary selector not matched yet — poll for up to 12 s for a non-zero value
+      try {
+        await page.waitForFunction(
+          (sel) => {
+            const el = document.querySelector(sel);
+            return el && /[1-9]/.test(el.textContent.trim());
+          },
+          { timeout: 12_000 },
+          VIEWER_SELECTOR
+        );
+        viewerText = await page.evaluate(
+          (sel) => { const el = document.querySelector(sel); return el ? el.textContent.trim() : null; },
+          VIEWER_SELECTOR
+        );
+      } catch (_) {
+        // Still nothing — read whatever text is there now
+        viewerText = await page.evaluate(
+          (sel) => { const el = document.querySelector(sel); return el ? el.textContent.trim() : null; },
+          VIEWER_SELECTOR
+        );
+      }
+    }
+
+    if (!viewerText) {
+      console.warn(`scrapePumpfunViewers(${mint.slice(0, 8)}…): viewer element not found`);
+      return 0;
+    }
+
+    const count = toNumber(viewerText);
+    console.log(`scrapePumpfunViewers(${mint.slice(0, 8)}…): scraped ${count} viewers (raw: "${viewerText}")`);
+    return count;
+
+  } catch (err) {
+    console.warn(`scrapePumpfunViewers(${mint.slice(0, 8)}…): ${err.message}`);
+    return 0;
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
 let RUNNING = false;
 let shutdownRequested = false; // set on SIGINT/SIGTERM to stop browser restarts
 let browserInstance = null;
@@ -3074,6 +3219,64 @@ app.get('/healthz', adminLimiter, requireAdminToken, (req, res) => {
       fallback_active: youtubeApiFallbackUsed
     }
   });
+});
+
+// ── robots.txt ────────────────────────────────────────────────────────────
+app.get('/robots.txt', (req, res) => {
+  res.type('text/plain').send(
+    'User-agent: *\n' +
+    'Allow: /\n' +
+    '\n' +
+    '# Disallow API and Auth routes from being indexed\n' +
+    'Disallow: /api/\n' +
+    'Disallow: /auth/\n' +
+    'Disallow: /login/\n' +
+    '\n' +
+    'Sitemap: https://iceposeidon.network/sitemap.xml\n'
+  );
+});
+
+// ── sitemap.xml ───────────────────────────────────────────────────────────
+app.get('/sitemap.xml', (req, res) => {
+  const BASE_URL = 'https://iceposeidon.network';
+  const now = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+
+  // Fetch all known streamers from the DB to include their profile pages
+  const streamers = db
+    .prepare(`SELECT platform, username FROM streamers ORDER BY platform, username`)
+    .all();
+
+  const staticUrls = [
+    { loc: `${BASE_URL}/`, priority: '1.0', changefreq: 'always' },
+  ];
+
+  const streamerUrls = streamers.map(s => ({
+    loc: `${BASE_URL}/streamer/${encodeURIComponent(s.platform)}/${encodeURIComponent(s.username.toLowerCase())}`,
+    priority: '0.8',
+    changefreq: 'hourly',
+  }));
+
+  const allUrls = [...staticUrls, ...streamerUrls];
+
+  const urlEntries = allUrls
+    .map(
+      u =>
+        `  <url>\n` +
+        `    <loc>${u.loc}</loc>\n` +
+        `    <lastmod>${now}</lastmod>\n` +
+        `    <changefreq>${u.changefreq}</changefreq>\n` +
+        `    <priority>${u.priority}</priority>\n` +
+        `  </url>`
+    )
+    .join('\n');
+
+  const xml =
+    `<?xml version="1.0" encoding="UTF-8"?>\n` +
+    `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+    urlEntries + '\n' +
+    `</urlset>\n`;
+
+  res.type('application/xml').send(xml);
 });
 
 // ── Catch-all 404 — don't expose route structure or stack traces ──────────

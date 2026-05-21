@@ -1,7 +1,7 @@
 <div align="center">
   <h1>🌐 DaNetworkCode Streamer Scraper</h1>
   <p><b>A high-performance, multi-platform livestream monitoring service.</b></p>
-  <p>Actively tracks live status, viewer counts, metadata, and VODs across Kick, Twitch, YouTube, Vaughn, and Parti.</p>
+  <p>Actively tracks live status, viewer counts, metadata, and VODs across Kick, Twitch, YouTube, Vaughn, Parti, and <b>Pump.fun</b>.</p>
   
   <br>
   
@@ -15,7 +15,8 @@
 
 <h2>✨ Key Features</h2>
 <ul>
-  <li><b>Multi-Platform Integration:</b> Connects to Kick, Twitch, YouTube, Vaughn, and Parti via API and web scraping to build a unified streamer database.</li>
+  <li><b>Multi-Platform Integration:</b> Connects to Kick, Twitch, YouTube, Vaughn, Parti, and Pump.fun via API and web scraping to build a unified streamer database.</li>
+  <li><b>Pump.fun Crypto Streaming:</b> Tracks streams tied to Solana mint addresses, complete with intelligent WebSocket/React rendering bypass using Puppeteer to scrape live viewer counts.</li>
   <li><b>Advanced YouTube Quota Management:</b> Features a built-in admin dashboard (<code>/youtube-dashboard</code>) to track daily/monthly usage, archive history, and prevent API exhaustion.</li>
   <li><b>Kick OAuth2 & PKCE:</b> Fully automated Kick token generation and refreshing for reliable data extraction.</li>
   <li><b>Intelligent Puppeteer Fallback:</b> Uses headless browser scraping for platforms that require JS rendering, specifically tuned for low-core VPS environments (auto-restarts to prevent memory leaks).</li>
@@ -62,20 +63,22 @@ TWITCH_USERNAMES=streamer1,streamer2
 YOUTUBE_USERNAMES=streamer1,streamer2
 VAUGHN_USERNAMES=streamer1,streamer2
 PARTI_USER_IDS=12345,67890
+PUMPFUN_MINTS=21rKrtBzibPAZHAHQRzGiGDSh7XimCKB2a8VgsjZpump,AnotherMint
 
-# YouTube API Setup
+# API Keys & Auth Setup
 YOUTUBE_API_KEY=your_google_api_key
 YOUTUBE_QUOTA_DAILY_LIMIT=1010000
 YOUTUBE_MONTHLY_BUDGET_PERCENT=0.85
 
-# Twitch API Setup
 TWITCH_CLIENT_ID=your_twitch_client_id
 TWITCH_CLIENT_SECRET=your_twitch_client_secret
 
-# Kick API Setup
 KICK_CLIENT_ID=your_kick_client_id
 KICK_CLIENT_SECRET=your_kick_client_secret
 KICK_REDIRECT_URI=http://localhost:3000/auth/kick/callback
+
+# Optional Pump.fun API Key (if required by frontend API)
+PUMPFUN_API_KEY=your_pumpfun_api_key
 </code></pre>
 
 <h2>🛡️ Admin Dashboard & Endpoints</h2>

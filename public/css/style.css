@@ -354,14 +354,100 @@ h3 {
     width: 100%;
     background-color: var(--header-bg);
     text-align: center;
-    padding: 20px 0;
+    padding: 20px 10px;
     margin-top: 50px;
 }
 
-.footer-links { display: flex; justify-content: center; gap: 20px; }
-.footer-links a, #footer p { font-size: 14px; color: var(--text-primary); text-decoration: none; }
-.footer-links a { font-weight: bold; transition: opacity 0.2s; }
+.footer-links {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px 16px;
+    padding: 0 10px;
+}
+
+.footer-links a, #footer p {
+    font-size: 14px;
+    color: var(--text-primary);
+    text-decoration: none;
+}
+
+.footer-links a {
+    font-weight: bold;
+    transition: opacity 0.2s;
+    white-space: nowrap;
+}
+
 .footer-links a:hover { opacity: 0.8; }
+
+#footer p {
+    margin-top: 10px;
+}
+
+/* Mobile portrait */
+@media (max-width: 480px) {
+    .footer-links {
+        gap: 8px 12px;
+    }
+
+    .footer-links a, #footer p {
+        font-size: 12px;
+    }
+}
+
+/* Mobile landscape */
+@media (max-width: 900px) and (orientation: landscape) {
+    #footer {
+        padding: 12px 10px;
+        margin-top: 30px;
+    }
+
+    .footer-links {
+        gap: 6px 14px;
+    }
+
+    .footer-links a, #footer p {
+        font-size: 12px;
+    }
+
+    #footer p {
+        margin-top: 6px;
+    }
+}
+/* =========================
+   Site Banner
+   ========================= */
+#site-banner {
+    width: 100%;
+    overflow: hidden;
+    line-height: 0;
+    background-color: var(--panel-bg);
+}
+
+#site-banner img {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 165px;
+    object-fit: cover;
+    object-position: center;
+}
+
+/* Mobile — portrait */
+@media (max-width: 768px) and (orientation: portrait) {
+    #site-banner img {
+        max-height: 90px;
+        object-position: center top;
+    }
+}
+
+/* Mobile — landscape */
+@media (max-width: 900px) and (orientation: landscape) {
+    #site-banner img {
+        max-height: 70px;
+        object-position: center;
+    }
+}
 
 /* =========================
    Advertisement Containers

@@ -1,0 +1,65 @@
+services:
+
+  clipper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: stream-clipper:latest
+    container_name: clipper
+    restart: unless-stopped
+
+    ports:
+      # Expose on localhost only — Nginx (or any reverse proxy) sits in front.
+      # Change to "4242:4242" if you want direct public access (not recommended).
+      - "127.0.0.1:4242:4242"
+
+    env_file:
+      - .env
+
+    volumes:
+      # Persist the SQLite database between container restarts / rebuilds
+      - clipper-db:/app/clipper.db
+
+      # Persist finished clips (optional — remove if you only want in-memory clips)
+      - clipper-clips:/app/public/clips
+
+      # Persist temp working directory across restarts (avoids orphaned files)
+      - clipper-temp:/app/temp
+
+      # Persist PM2-style logs outside the container
+      - clipper-logs:/app/logs
+
+    # Limit blast radius if the app misbehaves
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "2.0"
+        reservations:
+          memory: 256m
+
+    # Drop all Linux capabilities that the Node process doesn't need
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN   # only needed at startup; dropped once files are owned correctly
+      - SETUID
+      - SETGID
+
+    # Read-only root filesystem where possible; writable paths are mounted above
+    # (uncomment if your image supports it fully)
+    # read_only: true
+    # tmpfs:
+    #   - /tmp
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  clipper-db:
+  clipper-clips:
+  clipper-temp:
+  clipper-logs:

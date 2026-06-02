@@ -1,0 +1,27 @@
+# Dependencies (re-installed inside image)
+node_modules/
+
+# Runtime data (mounted as volumes)
+public/clips/
+temp/
+logs/
+*.db
+*.db-wal
+*.db-shm
+
+# Dev / CI
+.git/
+.gitignore
+*.log
+*.md
+.DS_Store
+Thumbs.db
+
+# Deploy scripts (not needed inside image)
+deploy.sh
+harden.sh
+ecosystem.config.js
+
+# Secrets — never bake into image
+.env
+*.env

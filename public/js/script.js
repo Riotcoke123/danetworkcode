@@ -51,12 +51,13 @@ document.addEventListener("DOMContentLoaded", async () => {
         lastUpdatedSpan.textContent = `Last Scraped: ${new Date().toLocaleTimeString()}`;
       }
 
+      // Sort order: online → premiere → offline
+      // Within each tier: higher viewers first; offline: most recent broadcast first
       streamers.sort((a, b) => {
-        const aOnline = a.status === "online";
-        const bOnline = b.status === "online";
-        if (aOnline && !bOnline) return -1;
-        if (!aOnline && bOnline) return 1;
-        if (aOnline && bOnline) return (b.viewers_raw ?? 0) - (a.viewers_raw ?? 0);
+        const rank = s => s === "online" ? 0 : s === "premiere" ? 1 : 2;
+        const ra = rank(a.status), rb = rank(b.status);
+        if (ra !== rb) return ra - rb;
+        if (ra <= 1) return (b.viewers_raw ?? 0) - (a.viewers_raw ?? 0);
         return (new Date(b.last_broadcast_time || 0)) - (new Date(a.last_broadcast_time || 0));
       });
 
@@ -65,14 +66,16 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (header) channelsContainer.appendChild(header);
 
       streamers.forEach((data) => {
-        const isOnline = data.status === "online";
-        const platform = (data.platform || "").toLowerCase();
+        const isOnline   = data.status === "online";
+        const isPremiere = data.status === "premiere";
+        const isActive   = isOnline || isPremiere;
+        const platform   = (data.platform || "").toLowerCase();
         const displayName = (platform === "kick" || platform === "youtube" || platform === "rumble" || platform === "pumpfun")
             ? data.display_name || data.username
             : data.username;
 
         const row = document.createElement("div");
-        row.className = `channel ${isOnline ? "online" : "offline"} ${platform}`;
+        row.className = `channel ${isOnline ? "online" : isPremiere ? "premiere" : "offline"} ${platform}`;
         row.innerHTML = `
           <div class="avatar">
             <span class="image" style="background-image:url('${data.photo || "/images/default-avatar.png"}')"></span>
@@ -80,17 +83,19 @@ document.addEventListener("DOMContentLoaded", async () => {
           <div class="details">
             <div class="name">
               <span class="user-main-name">${displayName}</span>
-              ${isOnline && data.title ? `<span class="stream-title">${data.title}</span>` : ""}
+              ${isActive && data.title ? `<span class="stream-title">${data.title}</span>` : ""}
             </div>
             <div class="status">
-              <span>${isOnline ? formatNumber(data.viewers_raw ?? 0) : formatRelativeTime(data.last_broadcast_time)}</span>
-              ${isOnline ? `<span class="dot"></span>` : ""}
+              ${isPremiere ? `<span class="premiere-badge">PREMIERE</span>` : ""}
+              <span>${isActive ? formatNumber(data.viewers_raw ?? 0) : formatRelativeTime(data.last_broadcast_time)}</span>
+              ${isOnline   ? `<span class="dot"></span>` : ""}
+              ${isPremiere ? `<span class="dot premiere-dot"></span>` : ""}
             </div>
           </div>
         `;
 
         row.onclick = () => {
-          if (!isOnline && data.vod_url && (platform === "rumble" || platform === "youtube")) {
+          if (!isActive && data.vod_url && (platform === "rumble" || platform === "youtube")) {
             window.open(data.vod_url, "_blank");
           } else if (platform === "youtube" && data.url) {
             window.open(data.url, "_blank");

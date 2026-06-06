@@ -187,14 +187,14 @@ ON CONFLICT(id) DO UPDATE SET
   status              = excluded.status,
   viewers             = excluded.viewers,
   viewers_raw         = excluded.viewers_raw,
-  title               = CASE WHEN excluded.status='online' THEN excluded.title ELSE streamers.title END,
+  title               = CASE WHEN excluded.status IN ('online','premiere') THEN excluded.title ELSE streamers.title END,
   photo               = COALESCE(excluded.photo, streamers.photo),
-  url                 = CASE WHEN excluded.status='online' OR streamers.url IS NULL THEN excluded.url ELSE streamers.url END,
-  m3u8                = CASE WHEN excluded.status='online' THEN excluded.m3u8 ELSE streamers.m3u8 END,
+  url                 = CASE WHEN excluded.status IN ('online','premiere') OR streamers.url IS NULL THEN excluded.url ELSE streamers.url END,
+  m3u8                = CASE WHEN excluded.status IN ('online','premiere') THEN excluded.m3u8 ELSE streamers.m3u8 END,
   vod_id              = COALESCE(excluded.vod_id, streamers.vod_id),
   last_broadcast_time = CASE
     WHEN excluded.last_broadcast_time IS NOT NULL THEN excluded.last_broadcast_time
-    WHEN streamers.status='online' AND excluded.status='offline' THEN strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    WHEN streamers.status IN ('online','premiere') AND excluded.status='offline' THEN strftime('%Y-%m-%dT%H:%M:%SZ','now')
     ELSE streamers.last_broadcast_time
   END,
   updated_at          = strftime('%Y-%m-%dT%H:%M:%SZ','now')
@@ -1368,7 +1368,17 @@ async function fetchYouTubeLive(username) {
       if (liveVidMatch) videoId = liveVidMatch[1];
     }
 
-    // ── 3. Scheduled check ───────────────────────────────────────────────────
+    // ── 3. Premiere & scheduled check ────────────────────────────────────────
+    // Premieres are pre-recorded videos that play at a fixed time with live chat.
+    // They emit "isPremiere":true in ytInitialData at all stages (waiting + playing).
+    //   • Upcoming premiere  → isUpcoming:true  + isPremiere:true → treat as offline
+    //   • Playing premiere   → style:"LIVE"     + isPremiere:true → status = 'premiere'
+    //   • Regular scheduled  → isUpcoming:true  only             → treat as offline
+    const isPremiereSignal = !!(videoId && (
+      html.includes('"isPremiere":true')  ||
+      html.includes('"isPremiere": true')
+    ));
+
     // Scheduled/waiting streams also redirect to watch?v=ID — must exclude them.
     const isScheduled = !!(videoId && (
       html.includes('"isUpcoming":true')   ||
@@ -1379,13 +1389,35 @@ async function fetchYouTubeLive(username) {
       html.includes('" waiting"')
     ));
 
-    if (isScheduled) {
+    // A premiere that hasn't started yet shows isUpcoming — treat as offline.
+    // A premiere that IS playing shows style:LIVE (no isUpcoming) — we catch it below.
+    const isUpcomingPremiere = isPremiereSignal && isScheduled;
+
+    if (isUpcomingPremiere) {
+      console.log(`YouTube @${username}: upcoming premiere — treating as OFFLINE`);
+    } else if (isScheduled) {
       console.log(`YouTube @${username}: scheduled stream — treating as OFFLINE`);
+    }
+
+    // A premiere that IS actively playing emits style:LIVE + isPremiere:true.
+    // We detect it here so we can set status='premiere' instead of status='online'.
+    const isPlayingPremiere = isPremiereSignal && !isScheduled && (
+      html.includes('"style":"LIVE"')              ||
+      html.includes('"style": "LIVE"')             ||
+      html.includes('"BADGE_STYLE_TYPE_LIVE_NOW"') ||
+      html.includes('{"text":"LIVE"}')             ||
+      html.includes('"text":"LIVE"')               ||
+      html.includes('"text": "LIVE"')
+    );
+
+    if (isPlayingPremiere) {
+      console.log(`YouTube @${username}: playing premiere detected (isPremiere:true + LIVE badge)`);
     }
 
     // ── 4. Live signal detection — STRONG vs WEAK ────────────────────────────
     // STRONG signals only appear during an active live stream.
-    const hasStrongLiveSignal = !isScheduled && (
+    // Playing premieres are intentionally excluded — they get status='premiere', not 'online'.
+    const hasStrongLiveSignal = !isScheduled && !isPlayingPremiere && (
       html.includes('"isLive":true')               ||
       html.includes('"isLive": true')              ||
       html.includes('"isLiveNow":true')            ||
@@ -1403,7 +1435,7 @@ async function fetchYouTubeLive(username) {
     // "allowLiveDvr":true → persists on ended-stream VOD pages.
     // "hlsManifestUrl"    → sometimes present on non-live pages.
     // These alone cannot confirm live status — always require API verification.
-    const hasWeakLiveSignal = !isScheduled && !hasStrongLiveSignal && (
+    const hasWeakLiveSignal = !isScheduled && !isPlayingPremiere && !hasStrongLiveSignal && (
       html.includes('"hlsManifestUrl"')            ||
       html.includes('"liveStreamabilityRenderer"') ||
       html.includes('"allowLiveDvr":true')         ||
@@ -1586,9 +1618,9 @@ async function fetchYouTubeLive(username) {
         console.warn(`YouTube @${username}: no valid avatar found — photo will be blank`);
       }
     }
-    // ── 8. Stream title (live only) ──────────────────────────────────────────
+    // ── 8. Stream title (live or premiere) ──────────────────────────────────
     let streamTitle = null;
-    if (isLive) {
+    if (isLive || isPlayingPremiere) {
       const titleM = html.match(/"videoPrimaryInfoRenderer"[\s\S]{0,300}?"text"\s*:\s*"([^"]{3,200})"/);
       if (titleM) {
         streamTitle = titleM[1]
@@ -1650,7 +1682,7 @@ async function fetchYouTubeLive(username) {
       }
     }
 
-    if (isLive && videoId && YOUTUBE_API_KEY && apiConfirmedViewers === null) {
+    if ((isLive || isPlayingPremiere) && videoId && YOUTUBE_API_KEY && apiConfirmedViewers === null) {
       // Fetch live viewer count from API (1 quota unit). Never use HTML-parsed
       // counts — they are absent from server-side responses.
       viewersRaw = await fetchYouTubeViewerCount(videoId);
@@ -1659,19 +1691,30 @@ async function fetchYouTubeLive(username) {
     const channelUrl = `https://www.youtube.com/@${username}`;
     const watchUrl   = videoId ? `https://www.youtube.com/watch?v=${videoId}` : channelUrl;
 
-    console.log(`YouTube @${username}: ${isLive ? 'ONLINE' : 'OFFLINE'} viewers=${viewersRaw}${videoId ? ` id=${videoId}` : ''}`);
+    // Determine final status:
+    //   'online'   → live stream currently broadcasting
+    //   'premiere' → pre-recorded premiere playing now (has live chat, not a real stream)
+    //   'offline'  → not live
+    let finalStatus = 'offline';
+    if (isPlayingPremiere) {
+      finalStatus = 'premiere';
+    } else if (isLive) {
+      finalStatus = 'online';
+    }
+
+    console.log(`YouTube @${username}: ${finalStatus.toUpperCase()} viewers=${viewersRaw}${videoId ? ` id=${videoId}` : ''}`);
 
     return {
       id:                  makeId('youtube', username),
       platform:            'youtube',
       username,
       display_name:        displayName || null,
-      status:              isLive ? 'online' : 'offline',
+      status:              finalStatus,
       viewers_raw:         viewersRaw,
       viewers:             formatViewers(viewersRaw),
       title:               streamTitle,
       photo,
-      url:                 isLive ? watchUrl : channelUrl,
+      url:                 (finalStatus !== 'offline') ? watchUrl : channelUrl,
       m3u8:                null,
       vod_id:              videoId,
       last_broadcast_time: null,
@@ -2984,6 +3027,11 @@ app.get('/donos.html', (req, res) => {
   res.sendFile(path.join(__dirname, 'views', 'donos.html'));
 });
 
+
+app.get('/Acknowledgements.html', (req, res) => {
+  res.sendFile(path.join(__dirname, 'views', 'Acknowledgements.html'));
+});
+
 app.get('/login/kick', authLimiter, (req, res) => {
   const authUrl = getKickAuthUrl();
   res.redirect(authUrl);
@@ -3041,8 +3089,23 @@ app.get('/api/stats', (req, res) => {
   });
 });
 app.get('/youtube-dashboard', adminLimiter, requireAdminToken, (req, res) => {
-     res.sendFile(path.join(__dirname, 'youtube-quota-dashboard.html'));
-   });
+  const fs = require('fs');
+  const htmlPath = path.join(__dirname, 'youtube-quota-dashboard.html');
+  let html;
+  try {
+    html = fs.readFileSync(htmlPath, 'utf8');
+  } catch (err) {
+    return res.status(500).send('Dashboard file not found.');
+  }
+  // Inject ADMIN_TOKEN as a server-side JS variable so it never appears
+  // hard-coded in the static file or in client-side source control.
+  // The token is only visible to already-authenticated admin sessions.
+  const injection = `<script>window.__ADMIN_TOKEN__ = ${JSON.stringify(ADMIN_TOKEN)};</script>`;
+  html = html.replace('</head>', injection + '\n</head>');
+  res.setHeader('Content-Type', 'text/html');
+  res.setHeader('Cache-Control', 'no-store'); // never cache — token is in the payload
+  res.send(html);
+});
 app.get('/api/youtube/quota', adminLimiter, requireAdminToken, (req, res) => {
   const dailyQuotaRemaining = youtubeQuotaDailyLimit - youtubeQuotaUsed;
   const dailyBudgetRemaining = youtubeDailyBudget - youtubeQuotaUsed;

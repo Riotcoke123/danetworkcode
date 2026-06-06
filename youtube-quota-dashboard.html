@@ -62,9 +62,12 @@ window.addEventListener('load', () => {
 async function loadAll() {
   setLoading(true);
   try {
+    // Token is injected server-side by the /youtube-dashboard route.
+    // It is never stored in this file — rotate it freely in .env.
+    const token = window.__ADMIN_TOKEN__ || '';
     const [qRes, aRes] = await Promise.all([
-      fetch('/api/youtube/quota'),
-      fetch('/api/youtube/audit?format=detailed&days=90'),
+      fetch(`/api/youtube/quota?token=${token}`),
+      fetch(`/api/youtube/audit?format=detailed&days=90&token=${token}`),
     ]);
     if (!qRes.ok) throw new Error('Quota API ' + qRes.status);
     if (!aRes.ok) throw new Error('Audit API ' + aRes.status);

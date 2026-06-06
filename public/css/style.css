@@ -657,3 +657,48 @@ h3 {
     text-decoration: underline;
     text-decoration-color: #ffffff;
 }
+/* =========================
+   Premiere Status
+   ========================= */
+
+/* Row highlight — subtle purple tint, similar weight to online rows */
+#dashboard .channels .channel.premiere {
+    background-color: rgba(120, 60, 180, 0.08);
+}
+
+#dashboard .channels .channel.premiere:hover {
+    background-color: rgba(120, 60, 180, 0.15);
+}
+
+/* Status text colour for premiere rows */
+#dashboard .channels .channel.premiere .details .status {
+    color: var(--text-primary);
+}
+
+/* "PREMIERE" badge — pill label to the left of the viewer count */
+.premiere-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: bold;
+    letter-spacing: 0.06em;
+    color: #fff;
+    background: linear-gradient(135deg, #7b3fe4, #a855f7);
+    border-radius: 3px;
+    padding: 1px 5px;
+    margin-right: 6px;
+    vertical-align: middle;
+    white-space: nowrap;
+    text-transform: uppercase;
+}
+
+/* Premiere dot — purple YouTube icon (same size as online platform dots) */
+.premiere-dot {
+    width: 14px !important;
+    height: 14px !important;
+    background-color: transparent !important;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: contain;
+    border-radius: 0 !important;
+    background-image: url("/images/yt.png");
+}

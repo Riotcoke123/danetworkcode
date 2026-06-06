@@ -155,5 +155,5 @@ PUMPFUN_API_KEY=your_pumpfun_api_key
 <hr>
 
 <p align="center">
-  <i>Developed & Maintained by <a href="https://github.com/Riotcoke123">Riotcoke123</a>. Released under the MIT License.</i>
+  <i>Developed & Maintained by <a href="https://github.com/Riotcoke123">Riotcoke123</a>. Released under the GNU General Public License v3.0 (GPL-3.0).</i>
 </p>

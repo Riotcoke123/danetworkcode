@@ -30,15 +30,20 @@
 <p>Ensure you have Node.js version 18 or higher installed on your system, or use Docker for a containerized deployment.</p>
 
 <h3>Option 1: Docker Compose (Recommended)</h3>
+
 <pre><code># 1. Clone and navigate to the directory
+  
 git clone https://github.com/Riotcoke123/danetworkcode.git
+  
 cd danetworkcode
 
 # 2. Configure environment variables (see below)
 cp .env.example .env
 
 # 3. Build and run the container
+
 docker-compose up -d --build
+
 </code></pre>
 
 <h3>Option 2: Standard Node.js / PM2</h3>

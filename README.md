@@ -46,15 +46,12 @@ docker-compose up -d --build
 git clone https://github.com/Riotcoke123/danetworkcode.git
 cd danetworkcode
 
-2. Install dependencies
+# 2. Install dependencies
 npm install
-
 # 3. Configure environment variables
 cp .env.example .env
-
 # 4. Start the server
 npm start
-
 # OR start with PM2 for production deployments
 npm run pm2-start
 </code></pre>

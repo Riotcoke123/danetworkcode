@@ -46,7 +46,7 @@ docker-compose up -d --build
 git clone https://github.com/Riotcoke123/danetworkcode.git
 cd danetworkcode
 
-# 2. Install dependencies
+2. Install dependencies
 npm install
 
 # 3. Configure environment variables

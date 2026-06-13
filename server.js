@@ -2553,6 +2553,73 @@ async function scrapePumpfunViewers(mint) {
   }
 }
 
+/* ==========================================================================
+   RUMBLE — sidecar bridge
+   rumble.py runs as a local Flask service (default: http://localhost:5000).
+   server.js calls /scrape, maps results to the standard streamer shape,
+   and feeds them into the unified upsertStreamer pipeline.
+   ========================================================================== */
+const RUMBLE_SIDECAR_URL = process.env.RUMBLE_SIDECAR_URL || 'http://localhost:5000';
+const RUMBLE_SIDECAR_TIMEOUT_MS = Number(process.env.RUMBLE_SIDECAR_TIMEOUT_MS || 120_000);
+
+/**
+ * Call the rumble.py sidecar's /scrape endpoint and convert every result
+ * into the standard { id, platform, username, … } shape that upsertStreamer expects.
+ *
+ * The sidecar reads RUMBLE_CHANNELS and RUMBLE_USERS from its own .env so we
+ * don't need to pass the list — just trigger it and consume the response.
+ *
+ * Returns an array of streamer objects (may be empty on failure).
+ */
+async function fetchRumbleAll() {
+  try {
+    const res = await fetch(`${RUMBLE_SIDECAR_URL}/scrape`, {
+      signal: AbortSignal.timeout(RUMBLE_SIDECAR_TIMEOUT_MS),
+    });
+
+    if (!res.ok) {
+      console.error(`Rumble sidecar HTTP ${res.status}`);
+      return [];
+    }
+
+    const json = await res.json();
+    if (!json.success || !Array.isArray(json.results)) {
+      console.error('Rumble sidecar returned unexpected payload:', JSON.stringify(json).slice(0, 200));
+      return [];
+    }
+
+    return json.results.map(r => {
+      // identifier is the channel/user slug; type is "channel" or "user"
+      const username   = r.identifier.toLowerCase();
+      const isOnline   = r.status === 'online';
+      const viewersRaw = toNumber(r.viewer_count);
+
+      return {
+        id:                  makeId('rumble', username),
+        platform:            'rumble',
+        username,
+        display_name:        r.display_name || null,
+        status:              isOnline ? 'online' : 'offline',
+        viewers_raw:         viewersRaw,
+        viewers:             formatViewers(viewersRaw),
+        title:               r.stream_title  || null,
+        photo:               r.profile_photo || null,
+        // url: prefer live stream link when online, fall back to channel page
+        url:                 isOnline
+                               ? (r.stream_url || r.url)
+                               : (r.vod_url   || r.url),
+        m3u8:                null,
+        vod_id:              r.vod_url       || null,
+        last_broadcast_time: r.last_broadcast || null,
+      };
+    });
+
+  } catch (err) {
+    console.error('Rumble sidecar error:', err.message);
+    return [];
+  }
+}
+
 let RUNNING = false;
 let shutdownRequested = false; // set on SIGINT/SIGTERM to stop browser restarts
 let browserInstance = null;
@@ -2820,6 +2887,9 @@ async function runScraper() {
       ...parseList(process.env.YOUTUBE_USERNAMES).map(u => makeId('youtube', u.toLowerCase())),
       ...parseList(process.env.PARTI_USER_IDS).map(id => makeId('parti', String(id))),
       ...parseList(process.env.PUMPFUN_MINTS).map(m => makeId('pumpfun', m.trim().toLowerCase())),
+      // Rumble: channels and users share the same ID namespace (slug → rumble:<slug>)
+      ...parseList(process.env.RUMBLE_CHANNELS).map(c => makeId('rumble', c.toLowerCase())),
+      ...parseList(process.env.RUMBLE_USERS).map(u => makeId('rumble', u.toLowerCase())),
     ];
 
     const tasks = [
@@ -2839,6 +2909,8 @@ async function runScraper() {
       limit(() => fetchPartiAll()),
       // Pump.fun: one bulk live call + per-mint coin fallback for offline
       limit(() => fetchPumpfunAll()),
+      // Rumble: delegate all scraping to the rumble.py sidecar (one bulk call)
+      limit(() => fetchRumbleAll()),
     ];
 
     // Master scrape deadline — if any task hangs (e.g. real-browser CF solver),

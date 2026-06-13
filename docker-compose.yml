@@ -1,3 +1,4 @@
+
 services:
   app:
     build:
@@ -11,19 +12,17 @@ services:
       - .env
     environment:
       NODE_ENV: production
-      # Puppeteer sandbox must be disabled when running as non-root inside Docker
       PUPPETEER_ARGS: "--no-sandbox,--disable-setuid-sandbox"
+      RUMBLE_SIDECAR_URL: "http://localhost:5000"
     volumes:
-      # Persist the SQLite database across restarts
       - sqlite-data:/app/data
     security_opt:
-      # Required for Chromium's sandboxing model
       - seccomp:unconfined
-    shm_size: "256mb"          # Prevents Chromium renderer crashes
+    shm_size: "512mb"
     cap_drop:
       - ALL
     cap_add:
-      - SYS_ADMIN              # Needed by Chromium in --no-sandbox mode
+      - SYS_ADMIN
     healthcheck:
       test: ["CMD", "node", "-e",
         "require('http').get('http://localhost:3000/healthz?token='+process.env.ADMIN_TOKEN, r => process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]

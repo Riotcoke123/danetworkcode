@@ -170,6 +170,11 @@ async def run_scrape(channels, users):
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    return jsonify({"ok": True}), 200
+
+
 @app.route("/scrape", methods=["GET"])
 def trigger_scrape():
     channels = [c.strip() for c in os.getenv("RUMBLE_CHANNELS", "").split(",") if c.strip()]
